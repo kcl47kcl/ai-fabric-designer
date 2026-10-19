@@ -214,6 +214,17 @@ ul.flags li b{color:var(--warn)}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
 textarea.csvout{width:100%;min-height:120px;font-family:var(--mono);font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px}
 @media (prefers-reduced-motion:no-preference){.card{transition:box-shadow .15s}}
+/* ---------- Full-screen pinch-zoom viewer for expanded topology blocks (phones) ---------- */
+.zv{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.zv-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--card)}
+.zv-title{flex:1;min-width:0;font-weight:700;font-size:13.5px;color:var(--brand);line-height:1.3}
+.zv-stage{flex:1;position:relative;overflow:hidden;touch-action:none;background:var(--card)}
+.zv-canvas{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+.zv-canvas svg{display:block;min-width:0!important}
+.zv-tools{display:flex;justify-content:center;gap:10px;padding:10px 12px;border-top:1px solid var(--border);background:var(--card)}
+.zv-tools button{min-width:52px;min-height:44px;font:inherit;font-size:18px;font-weight:700;color:var(--brand);background:var(--bg);border:1px solid var(--border);border-radius:999px;cursor:pointer}
+.zv-hint{font-size:11px;color:var(--muted);text-align:center;padding:0 12px 6px;background:var(--card)}
+body.zv-open{overflow:hidden}
 /* ---------- Mobile app shell (phone/tablet): Design / Results views + bottom tab bar ---------- */
 .mnav{display:none}
 @media (max-width:980px){
@@ -268,7 +279,7 @@ textarea.csvout{width:100%;min-height:120px;font-family:var(--mono);font-size:11
         <div class="body">
           <div class="field">
             <div class="seg" id="dmode" role="group" aria-label="Design mode">
-              <button type="button" data-v="ra" aria-pressed="true" title="Locked to RA-validated options: NVIDIA switches, auto model selection, RA deployment modes, platform-documented NICs, all fabrics included">RA validated</button>
+              <button type="button" data-v="ra" aria-pressed="true" title="Locked to RA-validated options: NVIDIA switches, auto model selection, RA deployment modes, platform-documented NICs — you still choose which fabrics to include">RA validated</button>
               <button type="button" data-v="custom" aria-pressed="false" title="Full customization — every option opens up; off-RA choices are validated end to end and flagged">Custom</button>
             </div>
             <div class="help warn" id="dmode-help"></div></div>
@@ -1722,10 +1733,9 @@ const Exporter = {
     ["ewswmode","nsswmode","stswmode","oobswmode"].forEach(id=>{ if(ra) setSeg(id,"auto"); [...$(id).children].forEach(b=>{ if(b.dataset.v==="manual") b.disabled=ra; }); });
     if(ra){ setSeg("nsmode","ra"); setSeg("stmode","converged"); setSeg("oobspeed","1g"); }
     [["nsmode","dedicated"],["stmode","dedicated"],["oobspeed","10g"]].forEach(([id,v])=>{ [...$(id).children].forEach(b=>{ if(b.dataset.v===v) b.disabled=ra; }); });
-    [["inc-ew","sec-ew"],["inc-ns","sec-ns"],["inc-st","sec-st"],["inc-oob","sec-oob"]].forEach(([cb,sec])=>{
-      if(ra && !$(cb).checked){ $(cb).checked=true; $(sec).classList.remove("secoff"); $(sec).querySelector(".body").inert=false; }
-      $(cb).disabled=ra;
-    });
+    /* fabric include switches stay user-controlled in BOTH modes — RA mode locks the choices
+       inside each fabric, not which fabrics are in the design */
+    ["inc-ew","inc-ns","inc-st","inc-oob"].forEach(cb=>{ $(cb).disabled=false; });
     $("sec-g2").hidden = ra;
     if(ra && $("g2on").checked){ $("g2on").checked=false; $("sec-g2").classList.remove("secoff"); $("sec-g2").querySelector(".body").inert=true; }
     refreshOptions();
@@ -3013,6 +3023,47 @@ const Exporter = {
     };
     return map[kind];
   }
+  /* Pinch/drag/button zoom for the phone viewer: opens fitted (whole picture visible), scale 1–6× */
+  function zoomViewer(stage,canvas){
+    const svg=canvas.querySelector("svg"); if(!svg) return;
+    const vb=(svg.getAttribute("viewBox")||"0 0 900 400").split(/\s+/).map(Number);
+    const W=stage.clientWidth, H=stage.clientHeight, pad=8;
+    const base=Math.min((W-2*pad)/vb[2],(H-2*pad)/vb[3]);
+    const cw=vb[2]*base, ch=vb[3]*base;
+    svg.setAttribute("width",cw); svg.setAttribute("height",ch); svg.style.width=cw+"px"; svg.style.height=ch+"px";
+    let k=1, x=(W-cw)/2, y=(H-ch)/2;
+    const clamp=()=>{ k=Math.min(6,Math.max(1,k));
+      const sw=cw*k, sh=ch*k;
+      x = sw<=W ? (W-sw)/2 : Math.min(pad,Math.max(W-sw-pad,x));
+      y = sh<=H ? (H-sh)/2 : Math.min(pad,Math.max(H-sh-pad,y)); };
+    const apply=()=>{ clamp(); canvas.style.transform=`translate(${x}px,${y}px) scale(${k})`; };
+    const zoomAt=(nk,cx,cy)=>{ nk=Math.min(6,Math.max(1,nk)); x=cx-(cx-x)*(nk/k); y=cy-(cy-y)*(nk/k); k=nk; apply(); };
+    apply();
+    const P=new Map(); let last=null, moved=false, lastTap=0;
+    const rel=e=>{const r=stage.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top};};
+    stage.addEventListener("pointerdown",e=>{ P.set(e.pointerId,rel(e)); moved=false; if(P.size===2) last=null; });
+    stage.addEventListener("pointermove",e=>{
+      if(!P.has(e.pointerId)) return;
+      const prev=P.get(e.pointerId), cur=rel(e); P.set(e.pointerId,cur);
+      if(P.size===2){
+        const [a,b]=[...P.values()], dist=Math.hypot(a.x-b.x,a.y-b.y), mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};
+        if(last){ zoomAt(k*dist/last.dist,mid.x,mid.y); x+=mid.x-last.mid.x; y+=mid.y-last.mid.y; apply(); }
+        last={dist,mid}; moved=true;
+      } else if(P.size===1 && k>1){
+        const dx=cur.x-prev.x, dy=cur.y-prev.y; if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+        x+=dx; y+=dy; apply();
+      }
+    });
+    const up=e=>{ P.delete(e.pointerId); if(P.size<2) last=null;
+      if(e.type==="pointerup"&&!moved&&P.size===0){ const now=Date.now(), p=rel(e);
+        if(now-lastTap<300){ zoomAt(k<2?2.5:1,p.x,p.y); lastTap=0; } else lastTap=now; } };
+    stage.addEventListener("pointerup",up); stage.addEventListener("pointercancel",up); stage.addEventListener("pointerleave",up);
+    stage.addEventListener("wheel",e=>{ e.preventDefault(); const p=rel(e); zoomAt(k*(e.deltaY<0?1.15:1/1.15),p.x,p.y); },{passive:false});
+    $("zv-in").onclick=()=>zoomAt(k*1.5,W/2,H/2);
+    $("zv-out").onclick=()=>zoomAt(k/1.5,W/2,H/2);
+    $("zv-fit").onclick=()=>{ k=1; x=(W-cw)/2; y=(H-ch)/2; apply(); };
+    stage.__zv={get k(){return k;},cw,ch,W,H};
+  }
   function renderTopo(){
     const ov=$("topo-ov"), det=$("topo-detail");
     if(!TOPO.bom||!ov) return;
@@ -3021,9 +3072,20 @@ const Exporter = {
     if(TOPO.detail){
       const d=topoDetail(TOPO.detail), di=TOPO.idx||1, dpl=TOPO.plane;
       const dt=d?(typeof d.t==="function"?d.t(di,dpl):d.t):"";
-      det.innerHTML=d?`<div class="detailpane"><div class="detailhead"><span>⤢ ${dt}</span><span class="spacer"></span><button class="btn neutral small" id="dclose" type="button">Close</button></div><div class="diag">${d.f(TOPO.bom,di,dpl)}</div></div>`:"";
-      const c=$("dclose"); if(c) c.onclick=()=>{TOPO.detail=null;TOPO.idx=null;TOPO.plane=null;renderTopo();};
-    } else det.innerHTML="";
+      const phone=window.matchMedia("(max-width:980px)").matches;
+      if(d&&phone){
+        det.innerHTML=`<div class="zv" role="dialog" aria-modal="true" aria-label="${dt}"><div class="zv-head"><div class="zv-title">⤢ ${dt}</div><button class="btn neutral small" id="dclose" type="button">Close</button></div>`
+          +`<div class="zv-stage" id="zv-stage"><div class="zv-canvas" id="zv-canvas">${d.f(TOPO.bom,di,dpl)}</div></div>`
+          +`<div class="zv-hint">Pinch or use + / − to zoom · drag to move · double-tap to zoom in</div>`
+          +`<div class="zv-tools"><button type="button" id="zv-out" aria-label="Zoom out">−</button><button type="button" id="zv-fit" aria-label="Fit to screen" style="font-size:13px">Fit</button><button type="button" id="zv-in" aria-label="Zoom in">+</button></div></div>`;
+        document.body.classList.add("zv-open");
+        zoomViewer($("zv-stage"),$("zv-canvas"));
+      } else {
+        document.body.classList.remove("zv-open");
+        det.innerHTML=d?`<div class="detailpane"><div class="detailhead"><span>⤢ ${dt}</span><span class="spacer"></span><button class="btn neutral small" id="dclose" type="button">Close</button></div><div class="diag">${d.f(TOPO.bom,di,dpl)}</div></div>`:"";
+      }
+      const c=$("dclose"); if(c) c.onclick=()=>{document.body.classList.remove("zv-open");TOPO.detail=null;TOPO.idx=null;TOPO.plane=null;renderTopo();};
+    } else { det.innerHTML=""; document.body.classList.remove("zv-open"); }
     [ov,det].forEach(c=>c&&c.querySelectorAll(".clk").forEach(g=>{
       const open=()=>{TOPO.detail=g.dataset.detail;TOPO.idx=g.dataset.idx?+g.dataset.idx:null;TOPO.plane=g.dataset.plane||null;renderTopo();$("topo-detail").scrollIntoView({behavior:"smooth",block:"nearest"});};
       g.addEventListener("click",open);
