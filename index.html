@@ -506,6 +506,7 @@ body.zv-open{overflow:hidden}
               </select><div class="help">MMF SR reach limit 50 m incl. two patch panels (LinkX).</div></div>
           </div>
           <button class="btn primary" type="submit" style="width:100%">Generate validated BOM</button>
+          <div class="note" id="appbuild" style="text-align:center;font-size:11px"></div>
           <div class="note">Every line is validated against the official sources in the Project evidence store, or flagged <span class="badge un">UNVALIDATED</span> with the missing document named. Nothing is substituted or guessed.</div>
         </div>
       </div>
@@ -3497,6 +3498,8 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
+  const APP_BUILD="54";
+  if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
   applyDmode();
@@ -3514,7 +3517,9 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   window.mSet=mSet;
   /* self-hosted app build: offline-first via service worker (inert on claude.ai and local files) */
   if(window.AIFD_SELF_HOSTED&&"serviceWorker" in navigator&&location.protocol==="https:"){
-    navigator.serviceWorker.register("sw.js").catch(()=>{});
+    const hadCtl=!!navigator.serviceWorker.controller; let reloaded=false;
+    navigator.serviceWorker.addEventListener("controllerchange",()=>{ if(hadCtl&&!reloaded){ reloaded=true; location.reload(); } });
+    navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).then(r=>{ r.update(); document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") r.update(); }); }).catch(()=>{});
   }
   if($("mnav-design")){
     $("mnav-design").addEventListener("click",()=>mSet("design"));
