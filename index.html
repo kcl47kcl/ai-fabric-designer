@@ -568,7 +568,7 @@ body.zv-open{overflow:hidden}
    CHANGELOG.md). Every entry carries citations and as-of dates.
    ===================================================================== */
 const CATALOG = {
-  catalogVersion:"0.9.0", asOf:"2026-10-16",
+  catalogVersion:"0.9.1", asOf:"2026-10-16",
   sources:{
     RA_HGX:{t:"NVIDIA Enterprise RA: HGX AI Factory (HGX H100, H200, B200), 2-8-9-400 w/ Spectrum-X",d:"last updated Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/"},
     RA_NETHW:{t:"HGX AI Factory RA — Networking Hardware",d:"Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/networking-hardware.html"},
@@ -591,6 +591,8 @@ const CATALOG = {
     DGXB300_UG:{t:"NVIDIA DGX B300 User Guide — Introduction / Feature Summary (networking: 8× OSFP ports to 8× ConnectX-8 cards, 8×800Gb/s cluster network; 2× dual-port BlueField-3 DPUs for storage and management networks, 400Gb/s IB/Ethernet — integrated in the system)",d:"last updated Oct 5, 2026; accessed 2026-10-16",u:"https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html"},
     DGXH100_UG:{t:"NVIDIA DGX H100/H200 User Guide — Introduction / Feature Summary (networking: 4× OSFP ports to 8× ConnectX-7 single-port IB cards, cluster network; 2× dual-port ConnectX-7 Ethernet cards for storage and in-band management, up to 400GbE — integrated in the system; no BlueField-3 listed; exact card OPN not published in the UG)",d:"last updated Jan 26, 2026; accessed 2026-10-16",u:"https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html"},
     CX7:{t:"NVIDIA ConnectX-7 Adapter Cards User Manual — Ordering Part Numbers (full portfolio: NEAT/HEAT OSFP, WEAT/755106 QSFP112 Socket-Direct-ready, SFP56 quad-port, 8 legacy EOL OPNs)",d:"last updated Aug 12, 2026; accessed 2026-10-15",u:"https://networking-docs.nvidia.com/connectx7hw"},
+    CX8_FWRN:{t:"NVIDIA ConnectX-8 Firmware Release Notes v40.50.1002 — Validated and Supported Cables and Switches (MMA4Z00-NS-FLT / 980-9I51A-00NS00 twin-port 800(2x400)Gbps OSFP, 2xMPO12 APC, 850nm MMF, 50m, flat top — 800GE, MP; footnote: from firmware xx.48.10xx it 'may not function properly and can cause link-up failures', Known Issue 4835832; finned MMA4Z00-NS not in the CX-8 list; MMA4Z00-NS400 single-port also listed)",d:"last updated Oct 29, 2025; accessed 2026-10-19",u:"https://networking-docs.nvidia.com/connectx8fwrn/40471026/validated-and-supported-cables-and-switches"},
+    LINKX_NS_ORD:{t:"NVIDIA MMA4Z00-NS 800Gb/s Twin-port OSFP 2x400Gb/s Multimode 2xSR4 — Ordering Information (MMA4Z00-NS 980-9I510-00NS00 finned; MMA4Z00-NS-FLT 980-9I51A-00NS00 flat top — identical optics, heat-sink form only)",d:"last updated Oct 1, 2025; accessed 2026-10-19",u:"https://networking-docs.nvidia.com/800gmma4z00ns/ordering-information"},
     CX8:{t:"NVIDIA ConnectX-8 SuperNIC User Manual — Ordering Part Numbers (C8240 2×QSFP112; C8180 1×OSFP XDR/2×400GbE incl. -DT0 downstream-port and C8180L -SL0 partner-cooled variants)",d:"last updated Sep 30, 2026; accessed 2026-10-15",u:"https://networking-docs.nvidia.com/connectx8hw"},
     SN5K:{t:"NVIDIA SN5000 Series — Ordering Information (SN5600 920-9N42F-00RI-7C0 listed EoL; SN5610 920-9N42F-00RI-3C1 current)",d:"accessed 2026-10-13",u:"https://networking-docs.nvidia.com/sn5000hw/ordering-information"},
     SN2201:{t:"SN2201/SN2201_M User Manual — Ordering Information",d:"Oct 29, 2025; accessed 2026-10-13",u:"https://docs.nvidia.com/networking/display/sn2201switchesum/ordering+information"},
@@ -662,6 +664,7 @@ const CATALOG = {
   optics:{
     twin800:{sku:"MMA4Z00-NS",label:"800G Twin-port OSFP 2×SR4 MMF, 2×MPO-12/APC, 50 m, finned-top",cites:["LINKX"],validated:true},
     q112_400:{sku:"MMA1Z00-NS400",label:"400G QSFP112 SR4 MMF, MPO-12/APC, 50 m (IB+Eth; 200G documented via 1:2 splitter, two channels active)",cites:["LINKX","LINKX_Q112"],validated:true},
+    twin800flt:{sku:"MMA4Z00-NS-FLT",opn:"980-9I51A-00NS00",label:"800G Twin-port OSFP 2×SR4 MMF (2×400G), 2×MPO-12/APC, 850 nm, 50 m, flat top — one per ConnectX-8 OSFP cage",cites:["CX8_FWRN","LINKX_NS_ORD"],validated:true},
     osfp_400:{sku:"MMA4Z00-NS400",label:"400G Single-port OSFP SR4 MMF, MPO-12/APC, 50 m (OSFP NIC ports; IB+Eth; 200G/NDR200 documented via 1:2 splitter)",cites:["LINKX","LINKX_OSFP400"],validated:true}
   },
   fiber:{
@@ -1141,6 +1144,13 @@ function buildBOM(input){
   /* dual-port NICs that the RA runs single-port on this GPU platform (e.g. C8240 on HGX H100/H200/B200) */
   const effPorts = (ewn.onePortOn||[]).includes(input.gpu) ? 1 : ewn.ports;
   const ewnEff = effPorts!==ewn.ports ? {...ewn,ports:effPorts} : ewn;
+  /* Host-side optic per NIC CAGE (CX-8 FW RN v40.50.1002): a ConnectX-8 C8180 has ONE OSFP cage carrying
+     2×400G — it takes ONE twin-port flat-top MMA4Z00-NS-FLT, never two single-port modules. */
+  let twinFltUsed=false;
+  const hostOpt=(n,portsPerNic)=>{
+    if(/single cage, 2×400G/.test(n.ff||"")&&portsPerNic>=2){ twinFltUsed=true; return {o:C.optics.twin800flt,per:2,twin:true}; }
+    return {o:(n.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400,per:1,twin:false};
+  };
   if(effPorts!==ewn.ports) notes.push(`${ewn.id} on ${gpu.label}: ${ewn.onePortNote}.`);
   const ew = mixed? (()=>{   /* generic 1:1 Clos on total mixed bandwidth — no RA covers mixed GPU fabrics */
     const ports1=input.nodes*input.ewnicn*effPorts, s1=ewn.speedG||400;
@@ -1224,10 +1234,10 @@ function buildBOM(input){
     const mCites=mxmVal?C.optics.twin800.cites:(mxm.cites||ewSwitch.cites);
     const mSt=mxmVal?"VERIFIED":(mxmVer?"VERIFIED":"UNVALIDATED");
     for(const G of gl){
-      const hop=(G.ewn.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400;
+      const ho=hostOpt(G.ewn,G.eff), hop=ho.o;
       const g400=G.sp>=400;
       lines.push(V.line({fabric:"ew",sku:hop.sku,desc:hop.label+` — host side [${G.tag}]`+(g400?"":` — ${G.sp}G: two channels via the 1:2 splitter per the module spec`),role:"Optic",spareable:true,
-        qty:G.ports, math:`${G.nodes} hosts × ${G.nicn*G.eff} ports (${G.tag})`,
+        qty:Math.ceil(G.ports/ho.per), math:ho.twin?`${G.nodes} hosts × ${G.nicn} NIC cages (1 twin-port module per C8180 cage = 2×400G) (${G.tag})`:`${G.nodes} hosts × ${G.nicn*G.eff} ports (${G.tag})`,
         cites:g400?hop.cites:[...hop.cites,(G.ewn.ff||"").startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"],status:"VERIFIED"}));
       if(g400)
         lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+` — host↔leaf [${G.tag}] (E-W)`,role:"Fiber trunk",spareable:true,
@@ -1265,11 +1275,11 @@ function buildBOM(input){
     if(ew.sspine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — IB core / super-spine (${ew.coreGroups} core groups)`,role:"Super-spine",
       qty:ew.sspine, math:`${ew.spine.toLocaleString()} pod spines × 32 up-ports ÷ 64 per core switch = ${ew.coreGroups} groups × ${ew.coreGroupSize}`,
       cites:["QM97X0"],status:ew.overCore?"UNVALIDATED":"VERIFIED",needs:ew.overCore?"exceeds the 64-pod 3-tier maximum on QM9700 radix — Quantum-X800 class or 4-tier required":null}));
-    const ibHostOptic = ewn.ff.startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400;
+    const ibHo=hostOpt(ewn,effPorts), ibHostOptic=ibHo.o;
     const ibNdr200 = ewn.speedG<400;
     lines.push(V.line({fabric:"ew",sku:ibHostOptic.sku,desc:ibHostOptic.label+" — host side, IB firmware (LinkX: transceiver supports InfiniBand and Ethernet, auto-selected by switch protocol)"+(ibNdr200?" — NDR200: two channels active via the 1:2 splitter, per the module product specification":""),role:"Optic",spareable:true,
-      qty:ew.xH, math:`${input.nodes} hosts × ${hostLegs} rails`,
-      status:xdrSt("VERIFIED"),needs:xdrNd(null)&&"LinkX XDR transceiver family documentation (Quantum-X800 host links) — NDR-class modules shown as placeholder",
+      qty:Math.ceil(ew.xH/ibHo.per), math:ibHo.twin?`${input.nodes} hosts × ${input.ewnicn} C8180 cages (1 twin-port module per cage)`:`${input.nodes} hosts × ${hostLegs} rails`,
+      status:ibHo.twin?"UNVALIDATED":xdrSt("VERIFIED"),needs:ibHo.twin?"InfiniBand-mode validation of MMA4Z00-NS-FLT on ConnectX-8 (the CX-8 FW RN lists it at 800GE only; C8180 NDR operation via Quantum-2 to be confirmed)":(xdrNd(null)&&"LinkX XDR transceiver family documentation (Quantum-X800 host links) — NDR-class modules shown as placeholder"),
       cites:["LINKX","CX7",...(ibNdr200?[ewn.ff.startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"]:[])]}));
     lines.push(V.line({fabric:"ew",sku:C.optics.twin800.sku,desc:C.optics.twin800.label+` — ${ewSwitch.id} cages, host-facing (2×400G NDR legs; LinkX names Quantum-2 as the primary application)`,role:"Optic",spareable:true,
       qty:ew.xLS, math:`${ew.xH.toLocaleString()} rails ÷ 2 per twin-port cage`,status:xdrSt("VERIFIED"),needs:xdrNd(null)&&"LinkX XDR transceiver family documentation — NDR twin-port modules shown as placeholder on XDR cages",cites:["LINKX","QM97X0"]}));
@@ -1305,11 +1315,11 @@ function buildBOM(input){
       cites:["RA_PHYS","SN5K"],status:ew.overCore?"UNVALIDATED":"VERIFIED",needs:ew.overCore?"exceeds the 64-pod 3-tier maximum — 4-tier or higher-radix core required":null}));
 
     /* host-end optics by NIC form factor */
-    const hostOptic = ewn.ff.startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400;
+    const hoE=hostOpt(ewn,effPorts), hostOptic=hoE.o;
     const hostOpticOK = ew.railSpeed>=400;
     lines.push(V.line({fabric:"ew",sku:hostOptic.sku,desc:hostOptic.label+" — host side"+(hostOpticOK?"":` — ${ew.railSpeed}G operation: two channels active via the 1:2 splitter, per the module product specification`),role:"Optic",spareable:true,
-      qty:ew.xH, math:`${input.nodes} hosts × ${hostLegs} ports`,cites:hostOpticOK?hostOptic.cites:[...hostOptic.cites,ewn.ff.startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"],
-      status:hostOpticOK?"VALIDATED":"VERIFIED"}));
+      qty:Math.ceil(ew.xH/hoE.per), math:hoE.twin?`${input.nodes} hosts × ${input.ewnicn} C8180 cages — 1 twin-port module per cage (2×400G); ${ew.xH.toLocaleString()} × 400G ports`:`${input.nodes} hosts × ${hostLegs} ports`,cites:hostOpticOK?hostOptic.cites:[...hostOptic.cites,ewn.ff.startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"],
+      status:hoE.twin?"VERIFIED":(hostOpticOK?"VALIDATED":"VERIFIED")}));
     /* switch-end optics: NVIDIA LinkX validated; Cisco/Arista datasheet-verified parts; Juniper pending HCT */
     const mx = C.oemOpticsMatrix[ewSwitch.oem];
     const mxVal = mx.status==="VALIDATED", mxVer = mx.status==="VERIFIED";
@@ -1413,10 +1423,10 @@ function buildBOM(input){
   if(ns.spine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+" — converged N-S spine",role:"Spine",
     qty:ns.spine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol}));
   {
-    const nsHostOptic=(nsn.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400;
+    const nsHo=hostOpt(nsn,nsn.ports), nsHostOptic=nsHo.o;
     const ns400=ns.nsSpeedG>=400;
     lines.push(V.line({fabric:"ns",sku:nsHostOptic.sku,desc:nsHostOptic.label+` — node side (${nsn.id}, ${ns.nsSpeedG}GbE operation${ns400?"":": two channels active via the 1:2 splitter, per the module product specification"})`,role:"Optic",spareable:true,
-      qty:ns.xNode, math:`${input.nodes} nodes × ${ns.nsPortsPerNode} port(s)`,
+      qty:Math.ceil(ns.xNode/nsHo.per), math:nsHo.twin?`${input.nodes} nodes × ${input.nsnicn} C8180 cage(s) — 1 twin-port module per cage`:`${input.nodes} nodes × ${ns.nsPortsPerNode} port(s)`,
       cites:[...nsHostOptic.cites,...(ns400?[]:[(nsn.ff||"").startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"])],
       status:"VERIFIED"}));
   }
@@ -1442,10 +1452,10 @@ function buildBOM(input){
     lines.push(V.line({fabric:"ns",sku:g2.nsn.sku||"—",desc:g2.nsn.label+(g2.nsn.alt?` (alt: ${g2.nsn.alt})`:"")+" [host group 2]"+(b2?` — BUILT-IN: ${g2.srv.nsIntNote} (ships with the server)`:""),role:"DPU / NIC",builtIn:b2,
       qty:g2.nodes*g2.nsnicn, math:`${g2.nodes} hosts × ${g2.nsnicn}/host (${p2n}×${s2n}GbE, group 2)`,
       status:g2.nsn.validated?"VERIFIED":"UNVALIDATED",needs:g2.nsn.needs,cites:g2.nsn.cites||[]}));
-    const hop2=(g2.nsn.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400;
+    const ho2=hostOpt(g2.nsn,g2.nsn.ports), hop2=ho2.o;
     const g2400=s2n>=400;
     lines.push(V.line({fabric:"ns",sku:hop2.sku,desc:hop2.label+` — node side [group 2] (${g2.nsn.id}, ${s2n}GbE${g2400?"":": two channels via the 1:2 splitter per the module spec"})`,role:"Optic",spareable:true,
-      qty:ns.g2.ports, math:`${g2.nodes} nodes × ${p2n} port(s) (group 2)`,
+      qty:Math.ceil(ns.g2.ports/ho2.per), math:ho2.twin?`${g2.nodes} nodes × ${g2.nsnicn} C8180 cage(s) — 1 twin-port module per cage (group 2)`:`${g2.nodes} nodes × ${p2n} port(s) (group 2)`,
       cites:[...hop2.cites,...(g2400?[]:[(g2.nsn.ff||"").startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"])],status:"VERIFIED"}));
     if(g2400)
       lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+` — node↔leaf [group 2], 1 per ${s2n}G port (N-S)`,role:"Fiber trunk",spareable:true,
@@ -1543,6 +1553,9 @@ function buildBOM(input){
     hr.tierChange = g.tier!==ew.tier ? `fabric moves from ${ew.tier}-tier to ${g.tier}-tier at the growth target` : null;
   }
   if(mixed&&input.growth>0) notes.push("Growth target ignored for mixed host groups — re-run with the target counts per group.");
+  if(lines.some(l=>l.sku===C.optics.twin800flt.sku))
+    flags.push(V.flag("MMA4Z00-NS-FLT on ConnectX-8 — NVIDIA firmware known issue",
+      "the CX-8 Firmware Release Notes (v40.50.1002, Oct 29 2025) footnote this module: 'Starting with firmware version xx.48.10xx, the twin-port transceiver MMA4Z00-NS-FLT may not function properly and can cause link-up failures' (Known Issue 4835832; fix status not stated) — confirm the target CX-8 firmware and KI 4835832 resolution with NVIDIA before ordering"));
   const bom = {input,ew,ns,st,oob,inc,mixed,g2:mixed?g2:null,totalNodes:totalN,totalGpus:tGpus,lines,flags,notes,headroom:hr,server:srv||null,
     ewSwitch,nsSwitch,oobSwitch,
     ra:C.sources.RA_HGX, raScale:C.sources.SPOD, generatedAt:new Date().toISOString().slice(0,10)};
@@ -3534,7 +3547,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="56";
+  const APP_BUILD="57";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
