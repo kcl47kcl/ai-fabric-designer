@@ -1195,7 +1195,9 @@ function buildBOM(input){
   const legsExpected = gpu.ewLegs||input.gph;
   if(!mixed&&hostLegs!==legsExpected) flags.push(V.flag(`${input.ewnicn}× ${ewn.id} per host = ${hostLegs} E-W ports (RA expects ${legsExpected})`,
     isRTX?`RTX PRO RA specifies 4×400G rails per node (2 GPUs/rail, B3140H) — Table 6`
-         :`rail design is one host leg per GPU (HGX RA Table 6 / SuperPOD H100; SuperPOD B300 uses 2 legs/GPU twin-planar — select dual-plane + 2-port NICs for that pattern)`));
+         :legsExpected>input.gph
+           ?`the B300 RA pattern is 8 rails × 2 ports = ${legsExpected}×400G per host via ONE 2-port ConnectX-8 (C8180) per GPU, twin-planar (HGX AI Factory B300 RA Components; SuperPOD B300) — not more NICs; ${hostLegs}×400G is ${Math.round(100*hostLegs/legsExpected)}% of the RA's E-W bandwidth`
+           :`rail design is one host leg per GPU (HGX RA Table 6 / SuperPOD H100)`));
   if(isRTX && !isIB && !mixed){
     if(input.nodes>C.golden.rtx.maxNodes) flags.push(V.flag(`${input.nodes} nodes on RTX PRO 6000 BSE`,`RTX PRO AI Factory RA publishes 4–32 nodes (256 GPUs) only — sized with generic non-blocking Clos math beyond that; NVIDIA engagement required`));
     if(input.planes===2) flags.push(V.flag("Dual-plane E-W on RTX PRO 6000 BSE","the RTX PRO RA publishes a single-plane fabric — dual-plane sized generically, needs an NVIDIA-reviewed design"));
@@ -1893,7 +1895,8 @@ const Exporter = {
     const legs=(gpu&&gpu.ewLegs)||(+$("gph").value||8);
     if(!ewn) return Math.max(1,legs);
     const p=(ewn.onePortOn||[]).includes($("gpu").value)?1:ewn.ports;
-    return Math.max(1,Math.round(legs/p));
+    const gph=+$("gph").value||8;
+    return Math.max(1,Math.min(gph,Math.round(legs/p)));      /* RA patterns are ≤1 NIC per GPU */
   }
 
   function syncHelpers(){
@@ -1908,12 +1911,19 @@ const Exporter = {
     $("ewnic-help").className="help"+(ewn.speedG<400?" warn":"");
     const effP=(ewn.onePortOn||[]).includes(gpu.id)?1:ewn.ports;
     const legs=effP*ewnn, legsExp=gpu.ewLegs||gph, lpg=legsExp/gph;
+    const srvSel=CATALOG.servers.find(x=>x.id===$("server").value)||null;
     const railOK=legs===legsExp;
     const railTxt = lpg>=2?`${gph} rails (1/GPU) × ${lpg} ports each — twin-planar, one port per plane (RA)`
                   : lpg===1?`${gph} rails — one per GPU (RA)`
                   : `${legsExp} rails — ${gph/legsExp} GPUs per rail (RA)`;
     $("ewnicn-help").textContent = railOK?`${ewnn} × ${effP}-port${effP!==ewn.ports?" (1 of 2 ports enabled on this platform per RA)":""} = ${legs} ports/host — ${railTxt}${planes===2?`; ${legs/2} per plane`:""}.`
-      :`${ewnn} NIC${ewnn>1?"s":""} × ${effP} port${effP>1?"s":""} = ${legs} ports/host, but the RA expects ${legsExp} — change NICs per host to ${defaultNicCount()} (will be flagged if kept).`;
+      :(()=>{
+        const need=Math.ceil(legsExp/effP);
+        const raNic=(srvSel&&srvSel.ewNics&&srvSel.ewNics[0])||(lpg>=2?"CX8-C8180":"");
+        const raN=CATALOG.nics.find(n=>n.id===raNic);
+        if(need<=gph) return `${ewnn} NIC${ewnn>1?"s":""} × ${effP} port${effP>1?"s":""} = ${legs} ports/host, but the RA expects ${legsExp} (${railTxt}) — use ${need} NIC${need>1?"s":""} per host (flagged if kept).`;
+        return `${ewnn}× ${ewn.id} = ${legs}×${ewn.speedG}G ports/host. The RA pattern is ${legsExp}×400G — ${railTxt} — which needs a ${lpg}-port NIC per GPU${raN?` (${raN.label.split(" — ")[0]})`:""}, not more cards. Kept as-is: ${legs/gph>=1?"1 rail per GPU, ":""}${Math.round(100*legs/legsExp)}% of the RA's E-W bandwidth (flagged).`;
+      })();
     $("ewnicn-help").className="help"+(railOK?"":" warn");
     const ibSel = state.ewproto==="ib";
     $("planes-help").textContent = ibSel?(planes===2?"Published NDR designs are single-plane — dual-plane IB will be flagged.":"Single plane per the DGX SuperPOD H100 NDR pattern."):(planes===2?"Dual plane (A/B): validated pattern per DGX SuperPOD B300 (twin-planar) and the NVL72 dual-plane RA; HGX AI Factory RA publishes single-plane.":"Single plane per the HGX AI Factory RA.");
@@ -3547,7 +3557,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="57";
+  const APP_BUILD="58";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
