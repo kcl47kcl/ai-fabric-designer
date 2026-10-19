@@ -568,7 +568,7 @@ body.zv-open{overflow:hidden}
    CHANGELOG.md). Every entry carries citations and as-of dates.
    ===================================================================== */
 const CATALOG = {
-  catalogVersion:"0.9.1", asOf:"2026-10-16",
+  catalogVersion:"0.9.2", asOf:"2026-10-16",
   sources:{
     RA_HGX:{t:"NVIDIA Enterprise RA: HGX AI Factory (HGX H100, H200, B200), 2-8-9-400 w/ Spectrum-X",d:"last updated Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/"},
     RA_NETHW:{t:"HGX AI Factory RA — Networking Hardware",d:"Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/networking-hardware.html"},
@@ -737,6 +737,22 @@ const Engine = (() => {
   const ceil = Math.ceil;
   const find = (arr,id)=>arr.find(x=>x.id===id);
 
+  /** EVEN SPINE STRIPING (AI/HPC Clos rule): spine count S is an even power of two (2,4,8,16,32 — so a full
+      leaf's 32 uplinks always split evenly), every leaf sends the SAME whole number of uplinks to every
+      spine, and per-leaf uplinks are rounded UP to a multiple of S (never below 1:1). Pick the smallest S
+      that fits the spine down-radix (≤64) and leaf up-radix (≤32). groups=[{leaves,up}] per plane.
+      Returns null when no flat 2-tier striping fits (caller moves to the next regime). */
+  function evenStripe(groups,downRadix=64,upRadix=32){
+    for(const S of [2,4,8,16,32]){
+      const g=groups.filter(x=>x.leaves>0).map(x=>({...x,k:Math.ceil(x.up/S)}));
+      if(g.some(x=>x.k*S>upRadix)) continue;
+      const spineDown=g.reduce((a,x)=>a+x.leaves*x.k,0);
+      if(spineDown>downRadix) continue;
+      return {S,groups:g,spineDown,links:S*spineDown,kMax:Math.max(...g.map(x=>x.k)),kMin:Math.min(...g.map(x=>x.k))};
+    }
+    return null;
+  }
+
   function pickSwitch(cat, oem, role){
     const elig = cat.switches.filter(s=>s.oem===oem && s.roles.includes(role) && s.validated && !s.manualOnly);
     if(!elig.length) return null;
@@ -763,10 +779,15 @@ const Engine = (() => {
     const upCages = ceil(hostLinks*railSpeed/800);                 // leaf↔spine 800G links (1:1 Gbps)
     const upCagesPerPlane = ceil(upCages/planes);
     let tier=2, regime="flat", spine, sspine=0, pods=0, podNodes=0, podBlocks=0, coreGroups=0, coreGroupSize=0, linksSC=0, spineBasis;
-    const flatSpinePerPlane = Math.max(2, ceil(upCagesPerPlane/64));
-    if(leavesPerPlane<=64 && flatSpinePerPlane<=32){
-      spine = flatSpinePerPlane*planes;
-      spineBasis = `flat 2-tier: ${upCagesPerPlane.toLocaleString()} up-cages/plane ÷ 64 per spine; radix-checked (leaves/plane ${leavesPerPlane} ≤ 64 spine down-radix; spines/plane ${flatSpinePerPlane} ≤ 32 leaf up-radix)`;
+    const nLast = nodes-(blocksPerPlane-1)*nodesPerBlock;
+    const upFull = ceil(nodesPerBlock*railsPerLeaf*railSpeed/800), upLast = ceil(nLast*railsPerLeaf*railSpeed/800);
+    const stripe = leavesPerPlane<=64 ? evenStripe([{leaves:leavesPerBlock*(blocksPerPlane-1),up:upFull},{leaves:leavesPerBlock,up:upLast}]) : null;
+    let upCagesStriped = upCages, stripeInfo=null;
+    if(stripe){
+      spine = stripe.S*planes; stripeInfo=stripe;
+      upCagesStriped = stripe.links*planes;
+      const pl=stripe.groups.map(x=>`${x.leaves} leaf × ${x.k*stripe.S} up (${x.k} to each spine)`).join(" + ");
+      spineBasis = `flat 2-tier, even striping: ${stripe.S} spines/plane (even, divides every leaf's uplinks) — ${pl}; each spine ${stripe.spineDown}/64 down-ports; ${(stripe.links).toLocaleString()} leaf↔spine links/plane${stripe.links>upCagesPerPlane?` (≥1:1 — ${stripe.links-upCagesPerPlane} extra uplinks from rounding up to a multiple of ${stripe.S})`:" (exact 1:1)"}`;
     } else if(blocksPerPlane<=64){
       /* rail-aligned spine groups (NVIDIA SuperPOD pattern): one SG per rail; a leaf's 32 up-cages
          split 16 per rail across its SG; SG size = ceil(blocks/4) (≤16, so every leaf reaches every
@@ -793,13 +814,14 @@ const Engine = (() => {
       spineBasis=`3-tier folded Clos: ${pods} pod(s)/plane of ${podNodes} nodes (32 leaf + 32 spine per pod/plane; pod spine 32↓/32↑), core = ${coreGroups} groups × ${coreGroupSize}/plane — even striping ${coreStripe}/switch, ${pods*coreStripe}/64 down-ports used (headroom to ${2*coreGroupSize} pods)`;
     }
     const nIn = Math.min(nodes-(blocksPerPlane-1)*nodesPerBlock, nodesPerBlock);
-    const downG = nIn*railsPerLeaf*railSpeed, upG = downG;
+    const downG = nIn*railsPerLeaf*railSpeed, upG = stripeInfo ? stripeInfo.groups[stripeInfo.groups.length-1].k*stripeInfo.S*800 : downG;
     const cagesUsed = ceil(nIn*railsPerLeaf/legsPerCage)+ceil(nIn*railsPerLeaf*railSpeed/800);
-    const linksAll = upCages + linksSC;
-    return {proto:"eth",planes,railSpeed,legsPerCage,railsPerPlane,leavesPerBlock,nodesPerBlock,
+    const upL = regime==="flat"&&tier===2 ? upCagesStriped : upCages;
+    const linksAll = upL + linksSC;
+    return {proto:"eth",planes,railSpeed,legsPerCage,railsPerPlane,leavesPerBlock,nodesPerBlock,stripe:stripeInfo,nLast,
       blocks:blocksPerPlane,leaf,spine,sspine,tier,regime,tier3:tier===3,pods,podNodes,coreGroups,coreGroupSize,
       coreStripe:(typeof coreStripe!=="undefined"?coreStripe:0), overCore:(typeof overCore!=="undefined"?overCore:false),
-      hostLinks,downCages,upCages,links800:upCages,linksSC,spineBasis,
+      hostLinks,downCages,upCages:upL,links800:upL,linksSC,spineBasis,
       linksSS:linksAll, ssLinkG:800,
       xH:hostLinks, xLS:downCages, xSS:linksAll*2, cH: railSpeed>=400?hostLinks:ceil(hostLinks/2), cSS:linksAll*2,
       splitters: railSpeed<400?ceil(hostLinks/2):0,
@@ -819,12 +841,12 @@ const Engine = (() => {
     const leaf=leavesPerBlock*blocks*planes;
     const hostLinks=nodes*linksPerNode;
     const leavesPerPlane=leaf/planes, upPortsPerPlane=ceil(hostLinks/planes); // 400G ports; leaf = 32↓/32↑
-    let spine, spineBasis, beyond=false, tier=2, sspine=0, pods=0, podNodes=0, coreGroups=0, coreGroupSize=0, linksSC=0;
+    let spine, spineBasis, beyond=false, tier=2, sspine=0, pods=0, podNodes=0, coreGroups=0, coreGroupSize=0, linksSC=0, ibStripe=null, ibUp=null;
     if(planes===1 && linksPerNode===8 && blocks<=g.spineBySU.length){
       spine=g.spineBySU[blocks-1]; spineBasis=`DGX SuperPOD H100 RA published row (${blocks} SU)`;
-    } else if(leavesPerPlane<=64 && ceil(upPortsPerPlane/64)<=32){
-      spine=Math.max(2*planes,ceil(upPortsPerPlane/64)*planes);
-      spineBasis=`flat 2-tier, radix-checked on QM9700 (leaves/plane ${leavesPerPlane} ≤ 64; spines/plane ${ceil(upPortsPerPlane/64)} ≤ 32 leaf up-radix)`; beyond=true;
+    } else if(leavesPerPlane<=64 && (ibStripe=evenStripe([{leaves:leavesPerBlock*(blocks-1),up:nodesPerBlock},{leaves:leavesPerBlock,up:nodes-(blocks-1)*nodesPerBlock}]))){
+      spine=ibStripe.S*planes; ibUp=ibStripe.links*planes;
+      spineBasis=`flat 2-tier on QM9700, even striping: ${ibStripe.S} spines/plane — ${ibStripe.groups.map(x=>`${x.leaves} leaf × ${x.k*ibStripe.S} up (${x.k} to each spine)`).join(" + ")}; each spine ${ibStripe.spineDown}/64 down-ports`; beyond=true;
     } else {
       tier=3; beyond=true;
       const podSUs=Math.max(1,Math.floor(32/leavesPerBlock)); podNodes=podSUs*nodesPerBlock; // 4 SUs = 128 nodes/pod
@@ -839,11 +861,12 @@ const Engine = (() => {
     }
     const nIn=Math.min(nodes-(blocks-1)*nodesPerBlock,nodesPerBlock);
     const downG=nIn*1*400, upG=downG;
-    const linksAll=hostLinks+linksSC;                              // leaf↔spine + spine↔core, all 400G
+    const upIB = ibUp!=null ? ibUp : hostLinks;
+    const linksAll=upIB+linksSC;                                   // leaf↔spine + spine↔core, all 400G
     return {proto:"ib",planes,railSpeed:400,legsPerCage:2,railsPerPlane,leavesPerBlock,nodesPerBlock,
       blocks,leaf,spine,sspine,tier,tier3:tier===3,pods,podNodes,coreGroups,coreGroupSize,linksSC,
       coreStripe:(typeof coreStripeIB!=="undefined"?coreStripeIB:0), overCore:(typeof overCoreIB!=="undefined"?overCoreIB:false),
-      hostLinks, links400:hostLinks, linksSS:linksAll, ssLinkG:400, spineBasis, beyond,
+      hostLinks, links400:upIB, linksSS:linksAll, ssLinkG:400, spineBasis, beyond, stripe:ibStripe,
       xH:hostLinks, xLS:ceil(hostLinks/2), xSS:ceil(linksAll/2)*2, cH:hostLinks, cSS:linksAll,
       splitters:0,
       proof:{nodesInBlock:nIn,downG,upG,cagesUsed:nIn+ceil(nIn/2)+ceil(nIn/2),cagesAvail:64,ratio:"1:1",
@@ -1051,7 +1074,7 @@ const Engine = (() => {
     return fails;
   }
 
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeNS,sizeOOB,headroom,pickSwitch,selfTest,find};
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeNS,sizeOOB,headroom,pickSwitch,selfTest,find,evenStripe};
 })();
 
 /* =====================================================================
@@ -1156,9 +1179,11 @@ function buildBOM(input){
     const ports1=input.nodes*input.ewnicn*effPorts, s1=ewn.speedG||400;
     const ports2=g2.nodes*g2.ewnicn*g2.eff, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
-    const leaf=Math.max(2,Math.ceil(downG/(32*800)));
-    const links800=Math.ceil(downG/800);
-    const spine=Math.max(2,Math.ceil(links800/64));
+    let leaf=Math.max(2,Math.ceil(downG/(32*800))); if(leaf%2) leaf++;            /* even leaf count */
+    const need800=Math.ceil(downG/800), upPer=Math.ceil(need800/leaf);
+    const mst=E.evenStripe([{leaves:leaf,up:upPer}]);
+    const spine=mst?mst.S:Math.max(2,2*Math.ceil(need800/128));
+    const links800=mst?mst.links:need800;
     return {mixed:true,tier:2,regime:"mixed",planes:1,proto:"eth",rtx:false,
       leaf,spine,sspine:0,coreGroups:0,coreGroupSize:0,pods:0,blocks:1,leavesPerBlock:leaf,nodesPerBlock:totalN,
       railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:leaf*32,
@@ -1476,7 +1501,7 @@ function buildBOM(input){
     notes.push(`Storage rides the converged N-S fabric per the governing RA (VLAN-isolated): ${ns.pStor}×800G switch ports allocated to storage ≥ ${C.rules.storageGbpsPerGpu} Gb/s per GPU (${tGpus.toLocaleString()} GPUs × 12.5G = ${(tGpus*12.5/1000).toFixed(1)} Tb/s requirement). Physical-separation rule satisfied by explicit RA allowance — RA, Networking Physical Topologies.`);
   } else {
     const stGbps = tGpus*C.rules.storageGbpsPerGpu;
-    const stLeaf = Math.max(2, Math.ceil(stGbps/(64*800)*2));
+    const stLeaf = Math.max(2,2*Math.ceil(stGbps/(64*800)));
     let stSwitch = E.pickSwitch(C,input.stoem||"NVIDIA","st-leaf");
     if(input.stswmode==="manual"&&input.stswitch){
       const m=E.find(C.switches,input.stswitch);
@@ -2229,10 +2254,18 @@ const Exporter = {
   const DrailsInfo=b=>{const ew=b.ew,g=b.input.gph;
     const dbl=ew.proto!=="ib"&&!ew.rtx&&ew.planes===1&&ew.railsPerPlane===2*g;
     return {rails:dbl?g:ew.railsPerPlane,dbl};};
-  const DsuRow=(y,count,kind,sub)=>{
+  const DsuTail=(nodes,per)=>{ const r=nodes%per; return r?` · last SU partial: ${r} of ${per} hosts`:""; };
+  /* Real per-leaf uplink count from the engine's even striping (flat 2-tier); null ⇒ regime-fixed 32. */
+  const DleafUp=(b,li)=>{ const st=b.ew.stripe; if(!st) return null;
+    const lpb=b.ew.leavesPerBlock, last=li>lpb*(b.ew.blocks-1), g=last?st.groups[st.groups.length-1]:st.groups[0];
+    return {up:g.k*st.S,k:g.k,S:st.S,spineDown:st.spineDown}; };
+  /* SU row. nodes/perSU given ⇒ the trailing SU shows only the REAL host count ("n of N hosts", dashed frame). */
+  const DsuRow=(y,count,kind,sub,nodes,perSU)=>{
     const row=Dslot(count,8), xsA=Dxs(row.length,88,14); let s="";
+    const part=(nodes&&perSU)?nodes-(count-1)*perSU:0, partial=part>0&&part<perSU;
     row.forEach((o,k)=>{ if(o.ell){s+=Dell(xsA[k],y+20);return;}
-      s+=Dclk(kind,"scalable unit SU "+o.i,`${Dbox(xsA[k]-44,y,88,40,"var(--fg)")}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${sub}</text>`,o.i);});
+      const pt=partial&&o.i===count;
+      s+=Dclk(kind,"scalable unit SU "+o.i,`${Dbox(xsA[k]-44,y,88,40,"var(--fg)",pt)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${pt?`${part} of ${perSU} hosts`:sub}</text>`,o.i);});
     return {svg:s,xs:xsA,row};};
   const DrowLinks=(xsA,row,yTop,yBand,color,dash)=>{let s="";row.forEach((o,k)=>{if(o.ell)return;
     s+=`<line x1="${xsA[k]}" y1="${yTop}" x2="450" y2="${yBand}" stroke="${color}" stroke-width="1.3" opacity="0.8"${dash?' stroke-dasharray="3 4"':''}/>`;});return s;};
@@ -2299,7 +2332,7 @@ const Exporter = {
     let frames="";
     for(const c of cols) frames+=`<rect x="${c.cx-bw/2-12}" y="${y0-26}" width="${bw+24}" height="${y-y0+36}" rx="10" fill="none" stroke="${c.col}" stroke-width="1.4" stroke-dasharray="7 5" opacity="0.9"/><text x="${c.cx-bw/2-2}" y="${y0-12}" fill="${c.col}" font-weight="700" font-size="10" letter-spacing="1.5">${c.label}</text>`;
     s=frames+s;
-    const suY=y+46, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`);
+    const suY=y+46, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n);
     r.row.forEach((o,k)=>{ if(o.ell) return;
       s+=`<line x1="${r.xs[k]-6}" y1="${suY}" x2="${cols[0].cx}" y2="${y+10}" stroke="${cols[0].col}" stroke-width="1.3" opacity="0.8"/>`
         +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${cols[1].col}" stroke-width="1.3" opacity="0.8"/>`;});
@@ -2340,7 +2373,7 @@ const Exporter = {
         +`<text x="868" y="${y+45}" text-anchor="middle" fill="var(--muted)" font-size="7.5">${b.input.nodes>2000?"QM9790 fleet":"node slot"}</text>`;
     }
     y+=66;
-    const suY=y+42, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`);
+    const suY=y+42, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n);
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--rail1)")+r.svg;
     const ri=DrailsInfo(b);
     return Dsvg(suY+76,"E-W fabric overview",s,
@@ -2359,7 +2392,7 @@ const Exporter = {
       s+=Dtier(450,760,y,`N-S leaf switch tier — ${ns.leaf.toLocaleString()}× ${sw}`,ns.leaf,"leaf","nsleaf","var(--ok)",`nodes ${(ns.nsPortsPerNode||2)>=2?"dual-homed":"single-homed"} ${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}G`).svg;
       y+=66;
     }
-    const suY=y+42, r=DsuRow(suY,b.oob.sus,"suns","4 GPU hosts");
+    const suY=y+42, r=DsuRow(suY,b.oob.sus,"suns","4 GPU hosts",b.input.nodes,4);
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--ok)")+r.svg;
     return Dsvg(suY+76,"North-South fabric overview",s,(ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis),
       "node attach and switch tiers shown — reserved northbound port allocations are listed under Details & evidence");
@@ -2368,7 +2401,7 @@ const Exporter = {
     if(b.mixed) return mStOv(b);
     const ns=b.ns, ded=b.st.mode==="dedicated", gpus=b.totalGpus||b.input.nodes*b.input.gph;
     let s="", y=16;
-    const stLeaf=Math.max(2,Math.ceil(gpus*12.5/(64*800)*2));
+    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
     s+=Dband(y,"Storage arrays","far-end optics per storage-vendor compatibility matrix (UNVALIDATED line in the BOM)","var(--warn)","storage","storage attach");
     y+=46; s+=Dtrunk(y,y+26,ded?"array ports per vendor matrix":`${ns.pStor.toLocaleString()}×800G`); y+=26;
     if(ded){
@@ -2380,7 +2413,7 @@ const Exporter = {
         "var(--ok)","nsleaf","leaf tier",ns.merged);
       y+=46;
     }
-    const suY=y+42, r=DsuRow(suY,b.oob.sus,ded?"sust":"suns","4 GPU hosts");
+    const suY=y+42, r=DsuRow(suY,b.oob.sus,ded?"sust":"suns","4 GPU hosts",b.input.nodes,4);
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--warn)")+r.svg;
     return Dsvg(suY+76,"Storage fabric overview",s,
       ded?`requirement: ${gpus.toLocaleString()} GPUs × 12.5G = ${(gpus*12.5/1000).toFixed(1)} Tb/s on the dedicated fabric · N-S carries NO storage in this mode`
@@ -2396,7 +2429,7 @@ const Exporter = {
     row.forEach((o,k)=>{ if(o.ell){s+=Dell(xsA[k],swY+22);return;}
       s+=`<line x1="${xsA[k]}" y1="${swY}" x2="450" y2="${y}" stroke="var(--muted)" stroke-width="1.3"/>`;
       s+=Dclk("sn2201","SN2201 "+o.i,`${Dbox(xsA[k]-56,swY,112,44,"var(--muted)",true)}<text x="${xsA[k]}" y="${swY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SN2201 ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${swY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">48×1G + 4×100G</text>`,o.i);});
-    const suY=swY+44+40, r=DsuRow(suY,oob.sus,"suoob","4 GPU hosts");
+    const suY=swY+44+40, r=DsuRow(suY,oob.sus,"suoob","4 GPU hosts",b.input.nodes,4);
     s+=DrowLinks(r.xs,r.row,suY,swY+44,"var(--muted)",true)+r.svg;
     return Dsvg(suY+76,"OOB management overview",s,oob.rule,"dotted = 1G management: every BMC, SuperNIC/DPU BMC and switch mgmt port · physically isolated");
   }
@@ -2424,18 +2457,20 @@ const Exporter = {
     for(const l of realL){ if(!ew.rtx) s+=`<line x1="${lXs[l.k]}" y1="${lY}" x2="${lXs[l.k]}" y2="${lY-22}" stroke="var(--muted)" stroke-width="2.2"/><polygon points="${lXs[l.k]-4},${lY-20} ${lXs[l.k]+4},${lY-20} ${lXs[l.k]},${lY-28}" fill="var(--muted)"/>`;}
     if(ew.rtx&&realL.length===2) s+=`<line x1="${lXs[realL[0].k]+80}" y1="${lY+lH/2}" x2="${lXs[realL[1].k]-80}" y2="${lY+lH/2}" stroke="var(--rail3)" stroke-width="2.4"/><text x="450" y="${lY+lH/2-7}" text-anchor="middle" fill="var(--rail3)" font-weight="700">800G ISL</text>`;
     for(const su of realS) for(const l of realL) s+=`<line x1="${sXs[su.k]}" y1="${sY}" x2="${lXs[l.k]}" y2="${lY+lH}" stroke="${railC4[(l.s.i-1)%4]}" stroke-width="1.6" opacity="0.85"/>`;
-    s+=`<text x="12" y="${lY-12}" fill="var(--muted)" font-size="10">${ew.rtx?"":`↑ 32 up-cages per leaf → spine tier${pln?` of plane ${pln}`:""}`}</text>`;
+    const lu=DleafUp(b,g0+1);
+    s+=`<text x="12" y="${lY-12}" fill="var(--muted)" font-size="10">${ew.rtx?"":`↑ ${lu?`${lu.up} uplinks per leaf (${lu.k} to each of ${lu.S} spines)`:"32 up-cages per leaf"} → spine tier${pln?` of plane ${pln}`:""}`}</text>`;
     lRow.forEach((o,k)=>{ if(o.ell){s+=Dell(lXs[k],lY+lH/2);return;}
       const r=o.i-1;
       if(r===selRail) s+=`<rect x="${lXs[k]-83}" y="${lY-3}" width="166" height="${lH+6}" rx="8" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`;
       s+=Dbox(lXs[k]-80,lY,160,lH,railC4[r%4])+`<text x="${lXs[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pln?pln+"-":""}leaf ${(g0+r+1).toLocaleString()}</text><text x="${lXs[k]}" y="${lY+35}" text-anchor="middle" fill="${railC4[r%4]}" font-weight="600" font-size="10">${railLbl(r)}${pln?` · plane ${pln}`:""}</text>`;});
     sRow.forEach((o,k)=>{ if(o.ell){s+=Dell(sXs[k],sY+sH/2);return;}
-      s+=Dbox(sXs[k]-60,sY,120,sH,"var(--fg)")+`<text x="${sXs[k]}" y="${sY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${(su0+o.i).toLocaleString()}</text><text x="${sXs[k]}" y="${sY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">4 nodes${pln?" · →A+B":""}</text>`;});
+      const sn=su0+o.i, have=Math.max(0,Math.min(4,b.input.nodes-(sn-1)*4)), pt=have<4;
+      s+=Dbox(sXs[k]-60,sY,120,sH,"var(--fg)",pt)+`<text x="${sXs[k]}" y="${sY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${sn.toLocaleString()}</text><text x="${sXs[k]}" y="${sY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${pt?`${have} of 4 nodes`:"4 nodes"}${pln?" · →A+B":""}</text>`;});
     return Dsvg(sY+sH+58,`Leaf ${li}${pln?` of plane ${pln}`:""} inside leaf block ${blk}`,s,
       `${pln?`plane ${pln} only: `:""}leaf ${pln?pln+"-":""}${li.toLocaleString()} (highlighted, ${railLbl(selRail)}) lives in block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} = ${lpb} leaf${pln?` in THIS plane`:""} + ${ew.nodesPerBlock} nodes = SU ${(su0+1).toLocaleString()}${suN>1?`–${(su0+suN).toLocaleString()}`:""}`,
       isIB?`only the SUs cabled to this leaf are shown — rail-aligned per the SuperPOD pattern (this block's ${lpb} leaves serve ONLY these ${suN} SUs)${pln?` · hosts attach to planes A+B`:""}`
         :(pln?`plane ${pln==="A"?"B":"A"} has its own identical ${lpb} leaves for this block — no links between planes · hosts below attach to BOTH planes`
-         :`GPU-N of EVERY node lands on the leaf serving rail N · leaf: 32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + 32 up`));
+         :`GPU-N of EVERY node lands on the leaf serving rail N · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + 32 up`}`));
   }
   function spine2tSVG(b,si,pln){
     const ew=b.ew;
@@ -2462,7 +2497,7 @@ const Exporter = {
     }
     const spp=ew.spine/ew.planes, lpp=ew.leaf/ew.planes;
     si=Math.max(1,Math.min(si||1,spp));
-    const per=Math.round(32/spp*10)/10;
+    const st=ew.stripe, per=st?(st.kMin===st.kMax?`${st.kMax}`:`${st.kMin}–${st.kMax}`):Math.round(32/spp*10)/10;
     const tRow=DslotAt(spp,si), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
     const bRow=Dslot(lpp,4), bXs=Dxs(bRow.length,160,30), bY=190;
     let s="";
@@ -2470,12 +2505,12 @@ const Exporter = {
       s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--border)" stroke-width="2"/>`;
     tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
       if(o.i===si) s+=hi(tXs[k]-tW/2,tY,tW,44);
-      s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">≤64 down</text>`;});
+      s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${st?`${st.spineDown}/64 down-ports`:"≤64 down"}</text>`;});
     bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
-      s+=Dbox(bXs[k]-80,bY,160,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">32 up-cages</text>`;});
+      s+=Dbox(bXs[k]-80,bY,160,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${(()=>{const u=DleafUp(b,o.i);return u?`${u.up} uplinks · ${u.k} per spine`:"32 up-cages";})()}</text>`;});
     return Dsvg(bY+46+58,`Spine ${si}${pln?` (plane ${pln})`:""} in the flat 2-tier spread`,s,
-      `spine ${si} (highlighted) takes ${per} up-cage(s) from EVERY leaf${pln?` of plane ${pln} — plane ${pln==="A"?"B":"A"} is an independent copy`:""} — identical role across all ${spp} spines`,
-      `radix check: leaves ${lpp} ≤ 64 spine down-radix · spines ${spp} ≤ 32 leaf up-radix`);
+      `spine ${si} (highlighted) takes ${per} uplink${per==="1"?"":"s"} from EVERY leaf${pln?` of plane ${pln} — plane ${pln==="A"?"B":"A"} is an independent copy`:""} — identical role across all ${spp} spines`,
+      st?`even striping: ${spp} spines (even) · every leaf sends the same whole number of uplinks to each spine · ${st.spineDown}/64 spine ports used`:`radix check: leaves ${lpp} ≤ 64 spine down-radix · spines ${spp} ≤ 32 leaf up-radix`);
   }
   function nsLeafSVG(b,li){
     const ns=b.ns; let s="";
@@ -2545,15 +2580,16 @@ const Exporter = {
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">expand “Leaf switch tier” in the overview for the inside of this block</text>`;
     const hRow=Dslot(su.n,4), hXs=Dxs(hRow.length,176,22);
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
+      const hn=first+o.i, pl=hn>b.input.nodes, dz=pl?' stroke-dasharray="3 4"':'';
       for(let r=0;r<legs;r++){const off=(r-(legs-1)/2);
-        s+=`<line x1="${hXs[k]+off*9}" y1="${hY}" x2="${450+off*26}" y2="${tY+46}" stroke="${railC4[r%4]}" stroke-width="1.5" opacity="0.85"/>`;}
-      s+=Dbox(hXs[k]-88,hY,176,hH,"var(--fg)")
-        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">GPU host ${(first+o.i).toLocaleString()}</text>`
-        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.input.ewnicn}× ${b.input.ewnic} — ${ew.planes===2?`${ew.railsPerPlane}+${ew.railsPerPlane} rails`:`${DrailsInfo(b).rails} rails${DrailsInfo(b).dbl?" ·2 ports ea":""}`}</text>`;});
+        s+=`<line x1="${hXs[k]+off*9}" y1="${hY}" x2="${450+off*26}" y2="${tY+46}" stroke="${pl?"var(--muted)":railC4[r%4]}" stroke-width="1.5" opacity="0.85"${dz}/>`;}
+      s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
+        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
+        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${b.input.ewnicn}× ${b.input.ewnic} — ${ew.planes===2?`${ew.railsPerPlane}+${ew.railsPerPlane} rails`:`${DrailsInfo(b).rails} rails${DrailsInfo(b).dbl?" ·2 ports ea":""}`}`}</text>`;});
     const totRails=ew.railsPerPlane*ew.planes, rpg=totRails/b.input.gph, riS=DrailsInfo(b);
     return Dsvg(hY+hH+58,`Inside SU ${si} — E-W attach`,s,
       `each host: ${riS.dbl?`one rail per GPU — 2× ${ew.railSpeed}G ports each (${b.input.gph} rails; single-plane deviation)`:rpg>1?`${rpg}× ${ew.railSpeed}G rails per GPU${ew.planes===2&&rpg===2?" (twin-planar — one per plane)":""}`:(rpg===1?`one ${ew.railSpeed}G rail per GPU`:`one ${ew.railSpeed}G rail per ${b.input.gph/totRails} GPUs`)} · rail k of every host lands on the leaf serving rail k${ew.planes===2?" · rails split across planes A/B":""}`,
-      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${(first+su.n).toLocaleString()} on leaf block ${blk.toLocaleString()} · E-W attach only — N-S and OOB under their own tabs`);
+      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${Math.min(first+su.n,b.input.nodes).toLocaleString()}${first+su.n>b.input.nodes?` (+${first+su.n-b.input.nodes} planned, dotted)`:""} on leaf block ${blk.toLocaleString()} · E-W attach only — N-S and OOB under their own tabs`);
   }
   function suNsSVG(b,si){
     si=Math.max(1,Math.min(si||1,b.oob.sus));
@@ -2563,14 +2599,15 @@ const Exporter = {
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">expand “N-S leaf tier” in the overview for port allocation</text>`;
     const hRow=Dslot(4,4), hXs=Dxs(hRow.length,176,22);
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
-      for(const off of ((ns.nsPortsPerNode||2)>=2?[-1,1]:[0])) s+=`<line x1="${hXs[k]+off*12}" y1="${hY}" x2="${450+off*120}" y2="${tY+46}" stroke="var(--ok)" stroke-width="1.6" opacity="0.9"/>`;
-      s+=Dbox(hXs[k]-88,hY,176,hH,"var(--fg)")
-        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">GPU host ${(first+o.i).toLocaleString()}</text>`
-        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.input.nsnicn}× ${b.input.nsnic} · ${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}G</text>`;});
+      const hn=first+o.i, pl=hn>b.input.nodes, dz=pl?' stroke-dasharray="3 4"':'';
+      for(const off of ((ns.nsPortsPerNode||2)>=2?[-1,1]:[0])) s+=`<line x1="${hXs[k]+off*12}" y1="${hY}" x2="${450+off*120}" y2="${tY+46}" stroke="${pl?"var(--muted)":"var(--ok)"}" stroke-width="1.6" opacity="0.9"${dz}/>`;
+      s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
+        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
+        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${b.input.nsnicn}× ${b.input.nsnic} · ${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}G`}</text>`;});
     return Dsvg(hY+hH+58,`Inside SU ${si} — N-S attach`,s,
       (ns.nsPortsPerNode||2)>=2?`each host is dual-homed: one ${ns.nsSpeedG||200}G port to each leaf of the pair (redundancy per RA)`
         :`each host attaches SINGLE-homed at ${ns.nsSpeedG}G — no leaf-pair redundancy (RA deviation, flagged)`,
-      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${(first+4).toLocaleString()} · provisioning, storage, customer & support ride this attach (VLAN-isolated)`);
+      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${Math.min(first+4,b.input.nodes).toLocaleString()}${first+4>b.input.nodes?` (+${first+4-b.input.nodes} planned, dotted)`:""} · provisioning, storage, customer & support ride this attach (VLAN-isolated)`);
   }
   function suOobSVG(b,si){
     si=Math.max(1,Math.min(si||1,b.oob.sus));
@@ -2582,13 +2619,14 @@ const Exporter = {
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">expand the “SN2201 ${swNo.toLocaleString()}” box in the overview for its full 48-port domain</text>`;
     const hRow=Dslot(4,4), hXs=Dxs(hRow.length,176,22);
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
+      const hn=first+o.i, pl=hn>b.input.nodes, dz=pl?' stroke-dasharray="3 4"':'';
       s+=`<line x1="${hXs[k]}" y1="${hY}" x2="450" y2="${tY+46}" stroke="var(--muted)" stroke-width="1.8" stroke-dasharray="3 4"/>`;
-      s+=Dbox(hXs[k]-88,hY,176,hH,"var(--fg)")
-        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">GPU host ${(first+o.i).toLocaleString()}</text>`
-        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${ppn}×1G: BMC + NIC/DPU BMCs</text>`;});
+      s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
+        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
+        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${ppn}×1G: BMC + NIC/DPU BMCs`}</text>`;});
     return Dsvg(hY+hH+58,`Inside SU ${si} — OOB attach`,s,
       `${ppn}×1GBase-T per node (RA building block): server BMC, SuperNIC BMCs, DPU BMC — dotted = physically isolated management`,
-      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${(first+4).toLocaleString()} → SN2201 ${swNo.toLocaleString()} · switch mgmt ports and PDUs also land on the OOB network`);
+      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${Math.min(first+4,b.input.nodes).toLocaleString()}${first+4>b.input.nodes?` (+${first+4-b.input.nodes} planned, dotted)`:""} → SN2201 ${swNo.toLocaleString()} · switch mgmt ports and PDUs also land on the OOB network`);
   }
 
   /* One pod's 32 spines fanning to the 32 core groups — the spine s ↔ group s one-to-one map. */
@@ -2643,13 +2681,14 @@ const Exporter = {
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">physically separate from N-S (RA deviation — flagged in the BOM)</text>`;
     const hRow=Dslot(4,4), hXs=Dxs(hRow.length,176,22);
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
-      if(n>0) for(const off of [-1,1]) s+=`<line x1="${hXs[k]+off*12}" y1="${hY}" x2="${450+off*120}" y2="${tY+46}" stroke="var(--warn)" stroke-width="1.6" opacity="0.9"/>`;
-      s+=Dbox(hXs[k]-88,hY,176,hH,"var(--fg)")
-        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">GPU host ${(first+o.i).toLocaleString()}</text>`
-        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${n>0?`${n}× ${b.input.stnic} · ${n*stn.ports}×${stn.speedG}G`:"no storage NICs set (see §4)"}</text>`;});
+      const hn=first+o.i, pl=hn>b.input.nodes, dz=pl?' stroke-dasharray="3 4"':'';
+      if(n>0) for(const off of [-1,1]) s+=`<line x1="${hXs[k]+off*12}" y1="${hY}" x2="${450+off*120}" y2="${tY+46}" stroke="${pl?"var(--muted)":"var(--warn)"}" stroke-width="1.6" opacity="0.9"${dz}/>`;
+      s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
+        +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
+        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${n>0?`${n}× ${b.input.stnic} · ${n*stn.ports}×${stn.speedG}G`:"no storage NICs set (see §4)"}`}</text>`;});
     return Dsvg(hY+hH+58,`Inside SU ${si} — dedicated storage attach`,s,
       n>0?`each host attaches to the dedicated storage fabric with ${n}× ${b.input.stnic} (dual-plane)`:"set “Storage NICs per host” in section 4 to attach hosts to the dedicated fabric",
-      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${(first+4).toLocaleString()} · needs server-OEM slot/PCIe validation and a storage-vendor design (flagged)`);
+      `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${Math.min(first+4,b.input.nodes).toLocaleString()}${first+4>b.input.nodes?` (+${first+4-b.input.nodes} planned, dotted)`:""} · needs server-OEM slot/PCIe validation and a storage-vendor design (flagged)`);
   }
 
   /* ---- N-S spine tier: every N-S leaf spreads its uplinks across all spines ---- */
@@ -2700,7 +2739,7 @@ const Exporter = {
   /* ---- Dedicated storage leaf tier (storage mode = dedicated) ---- */
   function stLeafSVG(b,li){
     const gpus=b.input.nodes*b.input.gph;
-    const stLeaf=Math.max(2,Math.ceil(gpus*12.5/(64*800)*2));
+    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
     li=Math.max(1,Math.min(li||1,stLeaf));
     const aY=16, lY=120, lH=48, hY=252, hH=44;
     let s="";
@@ -2772,7 +2811,7 @@ const Exporter = {
     }
     y+=46; s+=Dtrunk(y,y+24,`${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports`); y+=24;
     const ri=DrailsInfo(b);
-    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts in ${su.c.toLocaleString()} SUs (${su.n}/SU)`,`${b.input.gph} GPUs per host · ${ri.rails} rails/host${dual?" per plane (twin-planar)":""}${ri.dbl?" · 2 ports per rail":""}`,"var(--fg)");
+    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts in ${su.c.toLocaleString()} SUs (${su.n}/SU)`,`${b.input.gph} GPUs per host · ${ri.rails} rails/host${dual?" per plane (twin-planar)":""}${ri.dbl?" · 2 ports per rail":""}${DsuTail(b.input.nodes,su.n)}`,"var(--fg)");
     y+=46;
     return Dsvg(y+40,"Generalized E-W tier design",s,
       dual?"per-plane design: PLANE A and PLANE B are identical, independent fabrics — no plane-to-plane links; every host attaches to both planes":`rail-optimized: GPU k of every host lands on the leaf serving rail k`,
@@ -2966,20 +3005,20 @@ const Exporter = {
     if(ns.merged) s+=Dband(y,"Converged N-S — merged into the E-W leaf tier","no separate N-S switches at this scale (RA) · VLAN-isolated",'var(--ok)',null,null,true);
     else s+=Dband(y,`N-S Leaf - Node connectivity — ${ns.leaf.toLocaleString()}× ${sw}`,`node attach ${(ns.nsPortsPerNode||2)>=2?"dual-homed across the leaf pair":"single-homed"}${ns.xSS?` · ISL ${(ns.xSS/2).toLocaleString()} links`:""}`,"var(--ok)");
     y+=46; s+=Dtrunk(y,y+24,`${ns.pCPU.toLocaleString()}×800G node attach`); y+=24;
-    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts`,`${b.input.nsnicn}× N-S DPU per host (${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}GbE) — every SU identical`,"var(--fg)");
+    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts`,`${b.input.nsnicn}× N-S DPU per host (${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}GbE) — every SU identical${DsuTail(b.input.nodes,4)}`,"var(--fg)");
     y+=46;
     return Dsvg(y+36,"Generalized N-S tier design",s,(ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis),
       "reserved northbound port allocations (per the RA) are listed in the design details, not drawn");
   }
   function genStOv(b){
     const ns=b.ns, ded=b.st.mode==="dedicated", gpus=b.totalGpus||b.input.nodes*b.input.gph; let s="", y=16;
-    const stLeaf=Math.max(2,Math.ceil(gpus*12.5/(64*800)*2));
+    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
     s+=Dband(y,"Storage arrays","far-end optics per storage-vendor compatibility matrix (no quantities — far end not yet defined)","var(--warn)");
     y+=46; s+=Dtrunk(y,y+24,ded?"array ports per vendor matrix":`${ns.pStor.toLocaleString()}×800G`); y+=24;
     if(ded) s+=Dband(y,`Dedicated storage leaf tier — ${stLeaf}× ${b.nsSwitch.id}`,"per-plane design (dual-plane) · RoCE lossless · RA deviation — flagged","var(--warn)");
     else s+=Dband(y, ns.merged?"Converged VLAN on the E-W leaf tier":`N-S leaf tier — ${ns.leaf.toLocaleString()}× ${b.nsSwitch.id}`,"storage traffic rides the converged fabric (RoCE lossless)","var(--ok)",null,null,ns.merged);
     y+=46; s+=Dtrunk(y,y+22); y+=22;
-    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts`,"every SU identical","var(--fg)");
+    s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts`,`every SU identical${DsuTail(b.input.nodes,4)}`,"var(--fg)");
     y+=46;
     return Dsvg(y+36,"Generalized storage design",s,
       ded?`requirement: ${gpus.toLocaleString()} GPUs × 12.5G = ${(gpus*12.5/1000).toFixed(1)} Tb/s on the dedicated fabric`:`requirement: ${gpus.toLocaleString()} GPUs × 12.5G = ${(gpus*12.5/1000).toFixed(1)} Tb/s · allocated ${ns.pStor.toLocaleString()}×800G = ${(ns.pStor*800/1000).toFixed(1)} Tb/s`,
@@ -3309,7 +3348,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         ${bom.inc.ew&&bom.ew.tier===3?kpi(bom.ew.pods.toLocaleString(),"Pods",bom.ew.planes===2?"per plane":"","k2"):""}
         ${bom.inc.ew?kpi((bom.ew.leaf+bom.ew.spine+bom.ew.sspine).toLocaleString(),"E-W switches",bom.ew.sspine?"leaf + spine + core":"leaf + spine","k2"):""}
         ${bom.inc.ns?kpi(bom.ns.merged?"0":(bom.ns.leaf+bom.ns.spine).toLocaleString(),"N-S switches",bom.ns.merged?"merged into E-W":"","k3"):""}
-        ${bom.inc.st&&i.stmode==="dedicated"?kpi(Math.max(2,Math.ceil(tG*12.5/(64*800)*2)).toLocaleString(),"Storage switches","dedicated","k3"):""}
+        ${bom.inc.st&&i.stmode==="dedicated"?kpi(Math.max(2,2*Math.ceil(tG*12.5/(64*800))).toLocaleString(),"Storage switches","dedicated","k3"):""}
         ${bom.inc.oob?kpi(bom.oob.switches.toLocaleString(),"OOB switches",bom.mixed?"shared 1G mgmt":"SN2201","k4"):""}
       </div>
 
@@ -3325,7 +3364,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
             <div class="big">${bom.ns.merged?"merged":bom.ns.leaf.toLocaleString()+(bom.ns.spine?` + ${bom.ns.spine}`:"")} <small>${bom.ns.merged?"into E-W leaves":"leaf"+(bom.ns.spine?" + spine":"")}</small></div>
             <div class="meta"><span class="mono">${esc(bom.nsSwitch.id)}</span> · ${bom.mixed?"per-group front-end NICs":`${i.nsnicn}× ${esc(i.nsnic)} / host`} · ${(bom.ns.nsPortsPerNode||2)>=2?"dual-homed":"single-homed"}</div></div>`:""}
           ${bom.inc.st?`<div class="fabcard st"><div class="fh">Storage ${stIcon(fst.st)}</div>
-            <div class="big">${i.stmode==="dedicated"?Math.max(2,Math.ceil(tG*12.5/(64*800)*2)).toLocaleString()+" <small>dedicated leaves</small>":"converged <small>with N-S</small>"}</div>
+            <div class="big">${i.stmode==="dedicated"?Math.max(2,2*Math.ceil(tG*12.5/(64*800))).toLocaleString()+" <small>dedicated leaves</small>":"converged <small>with N-S</small>"}</div>
             <div class="meta">${(tG*12.5/1000).toFixed(1)} Tb/s requirement · ≥12.5G per GPU (RA)</div></div>`:""}
           ${bom.inc.oob?`<div class="fabcard oob"><div class="fh">OOB management ${stIcon(fst.oob)}</div>
             <div class="big">${bom.oob.switches.toLocaleString()} <small>× SN2201</small></div>
@@ -3557,7 +3596,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="58";
+  const APP_BUILD="59";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
