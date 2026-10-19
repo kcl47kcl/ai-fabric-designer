@@ -1,7 +1,7 @@
 /* AI Fabric Designer — offline-first service worker.
    App page is always revalidated against GitHub (bypasses the 10-min HTTP cache) when online;
    cached copy is used only when offline. */
-const CACHE="aifd-v55";
+const CACHE="aifd-v56";
 const ASSETS=["./","index.html","manifest.webmanifest","icon-180.png","icon-192.png","icon-512.png","icon-512-maskable.png","logo.svg"];
 self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS.map(u=>new Request(u,{cache:"reload"})))).then(()=>self.skipWaiting()));});
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});

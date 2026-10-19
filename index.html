@@ -249,7 +249,10 @@ body.zv-open{overflow:hidden}
 .mnav{display:none}
 @media (max-width:980px){
   body{padding-inline:12px;padding-bottom:calc(86px + env(safe-area-inset-bottom,0px))}
-  .header{padding:8px 14px;gap:10px}
+  /* solid header that also covers the status-bar strip (full-screen app) — no see-through blur */
+  .header{top:0;margin:0 -12px;padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:10px;background:var(--hdr);backdrop-filter:none;-webkit-backdrop-filter:none}
+  /* ONE scroll area on phones: the form flows with the page (no nested scroll box that snaps back) */
+  .form-col{position:static;max-height:none;overflow:visible;overscroll-behavior:auto;margin:0;padding:0}
   .header .sub{display:none}
   .hdr-btn{display:none}
   .saved-view{margin-top:12px}
@@ -3531,7 +3534,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="55";
+  const APP_BUILD="56";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
