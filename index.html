@@ -239,6 +239,34 @@ body.zv-open{overflow:hidden}
   .btn{padding:12px 20px}
   form .btn.primary[type=submit]{position:sticky;bottom:12px;z-index:5;box-shadow:0 8px 22px rgba(0,130,202,.45)}
   .kpis{grid-template-columns:repeat(2,1fr)}
+  .card>header{flex-wrap:wrap}
+  .card>header .legend{margin-left:0!important;width:100%;order:4;font-size:11px;gap:10px}
+  /* BOM (overview): one card per line — name + status, then part number + qty */
+  table.lite,table.lite tbody,table.lite tr,table.lite td{display:block;width:auto!important}
+  table.lite{table-layout:auto}
+  table.lite thead{display:none}
+  table.lite tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"nm st" "sku q1" "sku q2";column-gap:12px;row-gap:2px;padding:10px 2px;border-bottom:1px solid var(--border-soft)}
+  table.lite tr:last-child{border-bottom:none}
+  table.lite td{padding:0;border:none;overflow:visible;white-space:normal}
+  table.lite td.nm{grid-area:nm;font-weight:600;line-height:1.35}
+  table.lite td.st{grid-area:st;align-self:start;text-align:right}
+  table.lite td.sku{grid-area:sku;align-self:center;font-family:var(--mono);font-size:12px;color:var(--muted);white-space:normal;word-break:break-all}
+  table.lite td.q1{grid-area:q1;font-size:17px;text-align:right}
+  table.lite td.q2{grid-area:q2;font-size:11.5px;font-weight:600;color:var(--muted);text-align:right}
+  table.lite td.q2::before{content:attr(data-l) ": "}
+  table.lite .dsc{font-weight:400}
+  /* BOM (details): stacked cards with labelled chips */
+  table.bom,table.bom tbody,table.bom tr{display:block}
+  table.bom thead{display:none}
+  table.bom tr{display:flex;flex-wrap:wrap;gap:4px 14px;padding:12px 2px;border-bottom:1px solid var(--border-soft)}
+  table.bom tr:last-child{border-bottom:none}
+  table.bom td{display:block;padding:0;border:none}
+  table.bom td.ds{order:-2;width:100%;font-weight:600}
+  table.bom td.ds .math,table.bom td.ds .cite{font-weight:400}
+  table.bom td.sku{order:-1;width:100%;font-size:12px;color:var(--muted);white-space:normal;word-break:break-all}
+  table.bom td[data-l]::before{content:attr(data-l) " ";font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+  table.bom td.bd{width:100%}
+  .tablewrap{overflow:visible}
   .fabgrid{grid-template-columns:1fr}
   .mnav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;background:color-mix(in srgb,var(--card) 90%,transparent);backdrop-filter:blur(16px) saturate(1.5);-webkit-backdrop-filter:blur(16px) saturate(1.5);border-top:1px solid var(--border);padding:6px 10px calc(6px + env(safe-area-inset-bottom,0px));gap:6px}
   .mnav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font:inherit;font-size:11px;font-weight:600;color:var(--muted);background:none;border:none;border-radius:12px;padding:6px 4px;cursor:pointer}
@@ -1892,10 +1920,10 @@ const Exporter = {
       const badge=l.status==="VALIDATED"?`<span class="badge ok">VALIDATED</span>`:l.status==="VERIFIED"?`<span class="badge ver">DATASHEET-VERIFIED</span>`:`<span class="badge un">UNVALIDATED</span>`;
       const eol=l.eol?` <span class="badge eol">EOL PART</span>`:"";
       const fut=l.futureOnly?` <span class="badge fut">AT GROWTH</span>`:"";
-      const fcell=future?`<td class="qty fut">${l.fQty!=null?l.fQty.toLocaleString():"—"}</td>`:"";
+      const fcell=future?`<td class="qty fut" data-l="@ growth">${l.fQty!=null?l.fQty.toLocaleString():"—"}</td>`:"";
       h+=`<tr${l.futureOnly?' class="futrow"':''}><td class="sku">${esc(l.sku)}</td>
-        <td>${esc(l.desc)}<div class="math">Qty: ${esc(l.math)}</div>${l.needs?`<div class="math">Needs: ${esc(l.needs)}</div>`:""}<div class="cite">${esc((l.cites||[]).map(c=>`${CATALOG.sources[c].t.split("(")[0].trim()} — ${CATALOG.sources[c].d}`).join(" · "))}</div></td>
-        <td>${esc(l.role)}</td><td class="qty">${l.futureOnly?"—":l.qty.toLocaleString()}</td>${fcell}<td class="qty">${l.futureOnly?"—":(l.spares!=null?l.spares.toLocaleString():"—")}</td><td>${badge}${eol}${fut}</td></tr>`;
+        <td class="ds">${esc(l.desc)}<div class="math">Qty: ${esc(l.math)}</div>${l.needs?`<div class="math">Needs: ${esc(l.needs)}</div>`:""}<div class="cite">${esc((l.cites||[]).map(c=>`${CATALOG.sources[c].t.split("(")[0].trim()} — ${CATALOG.sources[c].d}`).join(" · "))}</div></td>
+        <td class="rl" data-l="Role">${esc(l.role)}</td><td class="qty" data-l="Qty">${l.futureOnly?"—":l.qty.toLocaleString()}</td>${fcell}<td class="qty" data-l="+Spares">${l.futureOnly?"—":(l.spares!=null?l.spares.toLocaleString():"—")}</td><td class="bd">${badge}${eol}${fut}</td></tr>`;
     }
     return h+"</tbody></table></div>";
   }
@@ -3160,10 +3188,10 @@ const Exporter = {
       const name=esc((l.desc||"").split(" — ")[0].split(" (alt:")[0]);
       const tags=(l.builtIn?' <span class="pill inf" title="Chassis-integrated — ships with the GPU server">built-in</span>':"")
         +(l.eol?' <span class="pill un">EoL</span>':"")+(l.futureOnly?' <span class="pill inf">at growth</span>':"");
-      h+=`<tr><td class="sku">${esc(l.sku)}</td><td>${name}${tags}<div class="dsc">${esc(l.role)}</div></td>`
-        +`<td class="qty">${l.futureOnly?"—":l.qty.toLocaleString()}</td>`
-        +(future?`<td class="qty">${(l.fQty??l.qty).toLocaleString()}</td>`:"")
-        +`<td>${stIcon(l.status)}</td></tr>`;
+      h+=`<tr><td class="sku">${esc(l.sku)}</td><td class="nm">${name}${tags}<div class="dsc">${esc(l.role)}</div></td>`
+        +`<td class="qty q1">${l.futureOnly?"—":l.qty.toLocaleString()}</td>`
+        +(future?`<td class="qty q2" data-l="@ ${future.nodes.toLocaleString()} hosts">${(l.fQty??l.qty).toLocaleString()}</td>`:"")
+        +`<td class="st">${stIcon(l.status)}</td></tr>`;
     }
     return h+`</tbody></table></div>`;
   }
