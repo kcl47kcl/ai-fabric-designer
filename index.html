@@ -214,6 +214,26 @@ ul.flags li b{color:var(--warn)}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
 textarea.csvout{width:100%;min-height:120px;font-family:var(--mono);font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px}
 @media (prefers-reduced-motion:no-preference){.card{transition:box-shadow .15s}}
+/* ---------- Saved designs view ---------- */
+.saved-view{display:none;max-width:980px;margin:20px auto 0}
+body.m-saved .layout{display:none!important}
+body.m-saved .saved-view{display:block}
+.sv-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.sv-head h2{margin:0;font-size:18px;color:var(--navy)}
+.sv-head .spacer{flex:1}
+.sv-list{display:flex;flex-direction:column;gap:10px}
+.sv-item{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.sv-top{display:flex;align-items:flex-start;gap:10px}
+.sv-title{flex:1;min-width:0;font-weight:700;color:var(--fg);font-size:15px;line-height:1.3}
+.sv-title small{display:block;font-weight:400;color:var(--muted);font-size:12.5px;margin-top:2px}
+.sv-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted)}
+.sv-meta b{color:var(--fg);font-weight:600}
+.sv-actions{display:flex;flex-wrap:wrap;gap:8px}
+.sv-actions .btn{padding:7px 14px}
+.btn.danger{background:var(--err-bg);color:var(--err)}
+.btn.danger.armed{background:var(--err);color:#fff}
+.sv-empty{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:28px 20px;text-align:center;color:var(--muted)}
+.hdr-btn{font:inherit;font-size:12.5px;font-weight:600;color:#fff;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 14px;cursor:pointer}
 /* ---------- Full-screen pinch-zoom viewer for expanded topology blocks (phones) ---------- */
 .zv{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 .zv-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--card)}
@@ -231,6 +251,8 @@ body.zv-open{overflow:hidden}
   body{padding-inline:12px;padding-bottom:calc(86px + env(safe-area-inset-bottom,0px))}
   .header{padding:8px 14px;gap:10px}
   .header .sub{display:none}
+  .hdr-btn{display:none}
+  .saved-view{margin-top:12px}
   .layout{margin-top:12px;gap:14px}
   body.m-results .form-col{display:none}
   body.m-design .results{display:none}
@@ -295,7 +317,10 @@ body.zv-open{overflow:hidden}
     <div class="sub">Validated AI-cluster networking BOMs · catalog v<span id="catver"></span> (as-of <span id="catasof"></span>) · scales to 100,000 GPUs</div>
   </div>
   <div class="spacer"></div>
+  <button type="button" class="hdr-btn" id="hdr-saved">Saved designs</button>
 </div>
+
+<div class="saved-view" id="saved-view" aria-live="polite"></div>
 
 <div class="layout">
   <!-- ================= FORM RAIL ================= -->
@@ -529,6 +554,7 @@ body.zv-open{overflow:hidden}
 
 <nav class="mnav" aria-label="App sections">
   <button type="button" id="mnav-design" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg>Design</button>
+  <button type="button" id="mnav-saved" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>Saved</button>
   <button type="button" id="mnav-results" aria-pressed="false"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 17.5h7M17.5 14v7"/></svg>Results</button>
 </nav>
 <script>
@@ -1665,6 +1691,13 @@ const Exporter = {
         if(dl){ await dl.save({filename,data:blob}); return "saved"; }
       }
     }catch(e){ if(e&&e.code==="declined") return "declined"; }
+    try{
+      const touch=window.matchMedia&&window.matchMedia("(pointer:coarse)").matches;
+      if(touch&&navigator.canShare&&typeof File==="function"){
+        const f=new File([blob],filename,{type:blob.type||"application/octet-stream"});
+        if(navigator.canShare({files:[f]})){ await navigator.share({files:[f],title:filename}); return "shared"; }
+      }
+    }catch(e){ if(e&&e.name==="AbortError") return "declined"; }
     try{
       const u=URL.createObjectURL(blob),a=document.createElement("a");
       a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();
@@ -3419,7 +3452,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
         const blob=Exporter.xlsx(bom);
         const fn=`${exName(i)}.xlsx`;
         const r=await Exporter.save(fn,blob);
-        toast(r==="saved"?`${fn} — confirm the save prompt if shown`:r==="declined"?"Save declined":"Download unavailable in this view — use Copy BOM as CSV",r==="saved");
+        if(r!=="shared") toast(r==="saved"?`${fn} — confirm the save prompt if shown`:r==="declined"?"Save declined":"Download unavailable in this view — use Copy BOM as CSV",r==="saved");
       }catch(e){ toast("Excel export failed: "+e.message); }
     });
     /* topology tabs + overview */
@@ -3493,12 +3526,12 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
       sparesPct:Math.min(20,Math.max(0,+$("spares").value||0)),
       reach:$("reach").value
     };
-    try{ render(buildBOM(input)); if(window.innerWidth<=980) mSet("results"); else $("results").scrollIntoView({block:"start"}); }
+    try{ const bom=buildBOM(input); render(bom); SAVED.put(input,bom); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
     catch(err){ toast("Generation error: "+err.message); console.error(err); }
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="54";
+  const APP_BUILD="55";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
@@ -3506,12 +3539,107 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   const fails=Engine.selfTest(CATALOG);
   if(fails.length){ console.error("GOLDEN FAILS",fails); toast(`Engine self-test: ${fails.length} golden-config failure(s) — see console`); }
 
+  /* ---------- Saved designs: every generated design is kept on this device until deleted.
+     Stores the INPUTS (small, exact); opening re-runs the engine so the BOM is re-validated
+     against the current catalog — any catalog change since saving is called out. ---------- */
+  const SAVED=(()=>{
+    const KEY="aifd.saved.v1";
+    const read=()=>{ try{ return JSON.parse(localStorage.getItem(KEY)||"[]"); }catch(_){ return []; } };
+    const write=a=>{ try{ localStorage.setItem(KEY,JSON.stringify(a)); return true; }catch(_){ toast("Couldn't save — device storage unavailable or full"); return false; } };
+    try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(_){}
+    const sig=i=>JSON.stringify(i);
+    return {
+      list:()=>read().sort((a,b)=>b.ts-a.ts),
+      get:id=>read().find(r=>r.id===id),
+      put(input,bom){
+        const a=read(), now=Date.now(), s1=sig(input), dup=a.find(r=>sig(r.input)===s1);
+        const meta={nodes:bom.totalNodes||input.nodes,gpus:bom.totalGpus||input.nodes*input.gph,mode:input.dmode||"ra",
+          inc:bom.inc,mixed:!!bom.mixed,flags:bom.flags.length+bom.lines.filter(l=>l.status==="UNVALIDATED").length,
+          gpu:(CATALOG.gpus.find(g=>g.id===input.gpu)||{}).label||input.gpu,
+          server:(CATALOG.servers.find(x=>x.id===input.server)||{}).label||"Generic host",
+          ew:bom.inc.ew?bom.ewSwitch.id:null};
+        if(dup){ dup.ts=now; dup.cat=CATALOG.catalogVersion; dup.meta=meta; }
+        else a.push({id:"d"+now.toString(36)+Math.random().toString(36).slice(2,6),ts:now,client:input.client,descr:input.descr||"",cat:CATALOG.catalogVersion,input,meta});
+        if(write(a)){ const hb=$("hdr-saved"); if(hb&&!document.body.classList.contains("m-saved")) hb.textContent=`Saved designs (${a.length})`; }
+      },
+      del(id){ write(read().filter(r=>r.id!==id)); },
+      replaceAll(arr){ return write(arr); }
+    };
+  })();
+  async function designPack(rec){
+    const bom=buildBOM(rec.input), i=rec.input, enc=t=>new TextEncoder().encode(t), files=[];
+    files.push({name:`${exName(i)}.xlsx`,data:new Uint8Array(await Exporter.xlsx(bom).arrayBuffer())});
+    ["ew","ns","st","oob"].filter(f=>bom.inc[f]).forEach(f=>files.push({name:`${exName(i,f)}.svg`,data:enc(fullSVG(f,bom))}));
+    files.push({name:`${exName(i)} - design summary.txt`,data:enc(Exporter.summary(bom))});
+    files.push({name:"design.json",data:enc(JSON.stringify({app:"AI Fabric Designer",catalog:CATALOG.catalogVersion,saved:rec},null,1))});
+    const z=Exporter._zip(files);
+    return new Blob([await z.arrayBuffer()],{type:"application/zip"});
+  }
+  function renderSaved(){
+    const v=$("saved-view"), L=SAVED.list();
+    const fabs=inc=>["ew","ns","st","oob"].filter(f=>!inc||inc[f]).map(f=>({ew:"E-W",ns:"N-S",st:"Storage",oob:"OOB"})[f]).join(" · ");
+    v.innerHTML=`<div class="sv-head"><h2>Saved designs</h2><span class="note">${L.length} on this device</span><span class="spacer"></span>
+      <button class="btn neutral small" id="sv-backup" type="button"${L.length?"":" disabled"}>Back up all</button>
+      <label class="btn neutral small" style="display:inline-flex;align-items:center">Restore backup<input type="file" id="sv-restore" accept=".json,application/json" hidden></label></div>`
+      +(L.length?`<div class="sv-list">${L.map(r=>`
+      <div class="sv-item" data-id="${r.id}">
+        <div class="sv-top"><div class="sv-title">${esc(r.client||"Client")}${r.descr?`<small>${esc(r.descr)}</small>`:""}</div>${r.meta&&r.meta.flags?stIcon("UNVALIDATED"):stIcon("VALIDATED")}</div>
+        <div class="sv-meta"><span><b>${(r.meta&&r.meta.nodes||0).toLocaleString()}</b> hosts</span><span><b>${(r.meta&&r.meta.gpus||0).toLocaleString()}</b> GPUs</span>
+          <span>${esc(r.meta?r.meta.server:"")}${r.meta&&r.meta.mixed?" + group 2":""}</span><span>${r.meta&&r.meta.mode==="custom"?"Custom":"RA"} · ${fabs(r.meta&&r.meta.inc)}</span>
+          <span>${new Date(r.ts).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})} · catalog v${esc(r.cat)}</span></div>
+        <div class="sv-actions"><button class="btn primary small" data-act="open" type="button">Open</button>
+          <button class="btn neutral small" data-act="pack" type="button">Download design pack</button>
+          <button class="btn neutral small" data-act="xlsx" type="button">Excel</button>
+          <button class="btn danger small" data-act="del" type="button">Delete</button></div>
+      </div>`).join("")}</div>`
+      :`<div class="sv-empty">No saved designs yet.<br>Every design you generate is saved here automatically — open, download or delete it any time.</div>`);
+    v.querySelectorAll(".sv-item").forEach(el=>{
+      const id=el.dataset.id;
+      el.querySelector('[data-act="open"]').onclick=()=>{
+        const r=SAVED.get(id); if(!r) return;
+        try{ render(buildBOM(r.input)); mSet("results");
+          if(r.cat!==CATALOG.catalogVersion) toast(`Re-validated against catalog v${CATALOG.catalogVersion} (saved with v${r.cat}) — quantities reflect the current evidence`,true);
+        }catch(e){ toast("Couldn't open this design: "+e.message); }
+      };
+      el.querySelector('[data-act="pack"]').onclick=async()=>{
+        const r=SAVED.get(id); if(!r) return;
+        try{ const fn=`${exName(r.input)}.zip`; const res=await Exporter.save(fn,await designPack(r)); if(res!=="saved"&&res!=="shared") toast(res==="declined"?"Save declined":"Download unavailable here"); }
+        catch(e){ toast("Design pack failed: "+e.message); }
+      };
+      el.querySelector('[data-act="xlsx"]').onclick=async()=>{
+        const r=SAVED.get(id); if(!r) return;
+        try{ await Exporter.save(`${exName(r.input)}.xlsx`,Exporter.xlsx(buildBOM(r.input))); }catch(e){ toast("Excel export failed: "+e.message); }
+      };
+      const db=el.querySelector('[data-act="del"]'); let t=null;
+      db.onclick=()=>{
+        if(!db.classList.contains("armed")){ db.classList.add("armed"); db.textContent="Tap again to delete"; t=setTimeout(()=>{db.classList.remove("armed");db.textContent="Delete";},3500); return; }
+        clearTimeout(t); SAVED.del(id); renderSaved(); toast("Design deleted",true);
+      };
+    });
+    const bk=$("sv-backup"); if(bk) bk.onclick=async()=>{
+      const blob=new Blob([JSON.stringify({app:"AI Fabric Designer",kind:"saved-designs-backup",exported:new Date().toISOString(),designs:SAVED.list()},null,1)],{type:"application/json"});
+      await Exporter.save(`AI Fabric Designer - saved designs backup ${new Date().toISOString().slice(0,10)}.json`,blob);
+    };
+    const rs=$("sv-restore"); if(rs) rs.onchange=async()=>{
+      try{ const f=rs.files[0]; if(!f) return; const j=JSON.parse(await f.text());
+        const inc=(j.designs||(j.saved?[j.saved]:[])).filter(r=>r&&r.input&&r.id);
+        if(!inc.length){ toast("No designs found in that file"); return; }
+        const cur=SAVED.list(), ids=new Set(cur.map(r=>r.id)), add=inc.filter(r=>!ids.has(r.id));
+        SAVED.replaceAll([...cur,...add]); renderSaved(); toast(`Restored ${add.length} design${add.length===1?"":"s"}${inc.length>add.length?` (${inc.length-add.length} already here)`:""}`,true);
+      }catch(e){ toast("Couldn't read that backup: "+e.message); }
+    };
+  }
+  $("hdr-saved").addEventListener("click",()=>mSet(document.body.classList.contains("m-saved")?"results":"saved"));
+  { const n=SAVED.list().length; if(n) $("hdr-saved").textContent=`Saved designs (${n})`; }
+
   /* ---------- Mobile app shell: Design / Results views (≤980px; desktop unaffected) ---------- */
   function mSet(v){
     document.body.classList.toggle("m-design",v==="design");
     document.body.classList.toggle("m-results",v==="results");
-    const a=$("mnav-design"),bn=$("mnav-results");
-    if(a&&bn){ a.setAttribute("aria-pressed",v==="design"?"true":"false"); bn.setAttribute("aria-pressed",v==="results"?"true":"false"); }
+    document.body.classList.toggle("m-saved",v==="saved");
+    [["mnav-design","design"],["mnav-saved","saved"],["mnav-results","results"]].forEach(([id,k])=>{ const b=$(id); if(b) b.setAttribute("aria-pressed",v===k?"true":"false"); });
+    const hb=$("hdr-saved"); if(hb) hb.textContent=v==="saved"?"← Back to designer":`Saved designs${SAVED.list().length?` (${SAVED.list().length})`:""}`;
+    if(v==="saved") renderSaved();
     window.scrollTo({top:0});
   }
   window.mSet=mSet;
@@ -3524,6 +3652,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   if($("mnav-design")){
     $("mnav-design").addEventListener("click",()=>mSet("design"));
     $("mnav-results").addEventListener("click",()=>mSet("results"));
+    $("mnav-saved").addEventListener("click",()=>mSet("saved"));
     document.body.classList.add("m-design");
   }
 })();
