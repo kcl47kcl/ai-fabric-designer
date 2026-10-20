@@ -3673,7 +3673,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="61";
+  const APP_BUILD="62";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
@@ -3785,6 +3785,26 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     window.scrollTo({top:0});
   }
   window.mSet=mSet;
+  /* self-hosted app: iOS resumes a suspended home-screen app without reloading it, so check GitHub for a
+     newer build whenever the app comes back to the foreground, and reload straight into it */
+  if(window.AIFD_SELF_HOSTED){
+    let checking=false;
+    const checkBuild=async()=>{
+      if(checking||!navigator.onLine) return; checking=true;
+      try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"});
+        if(r.ok){ const v=await r.json(); if(+v.build>+APP_BUILD){
+          let tried=null; try{ tried=sessionStorage.getItem("aifd-upd"); }catch(_){}
+          if(tried===String(v.build)){ toast(`Build ${v.build} is available — close the app fully and reopen it`,true); return; }
+          try{ sessionStorage.setItem("aifd-upd",String(v.build)); }catch(_){}
+          toast(`Updating to build ${v.build}…`,true);
+          setTimeout(()=>location.replace(location.pathname+"?build="+v.build),600);   /* fresh URL ⇒ no stale cache */
+        } } }
+      catch(_){} finally{ checking=false; }
+    };
+    document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") checkBuild(); });
+    window.addEventListener("pageshow",checkBuild); window.addEventListener("focus",checkBuild);
+    setTimeout(checkBuild,1500);
+  }
   /* self-hosted app build: offline-first via service worker (inert on claude.ai and local files) */
   if(window.AIFD_SELF_HOSTED&&"serviceWorker" in navigator&&location.protocol==="https:"){
     const hadCtl=!!navigator.serviceWorker.controller; let reloaded=false;
