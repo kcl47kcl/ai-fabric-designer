@@ -734,6 +734,7 @@ const CATALOG = {
     storageGbpsPerGpu:12.5,customerGbpsPerGpu:25,
     oversubscription:"1:1 non-blocking fat tree at every E-W tier (HGX AI Factory RA 'full nonblocking fat tree'; DGX SuperPOD B300)",
     transport:"RoCEv2 lossless Ethernet: adaptive routing + telemetry-based congestion control on Spectrum-X; PFC/ECN(DCQCN)/DLB per OEM RoCE configuration; MTU 9000",
+    transportXDR:"XDR InfiniBand on Quantum-X800 (Q3400-RA) per the DGX SuperPOD B300 Quantum-X800 RA: SU = 72 nodes, rail-aligned (8 leaves per SU, one 800G XDR port per GPU via ConnectX-8), published spine rows; UFM 3.5 appliances on the Q3400 FNM ports",
     transportIB:"NDR InfiniBand on Quantum-2: adaptive routing + SHARP in-network aggregation; subnet manager on managed QM9700 (≤2,000 nodes per QM97XX UG) or UFM with externally managed QM9790; fat-tree rail-optimized per the DGX SuperPOD H100 NDR pattern"}
 };
 
@@ -761,6 +762,15 @@ const Engine = (() => {
     }
     return null;
   }
+
+  /** Automatic E-W switch — the SINGLE source of truth used by both the builder and the form.
+      ConnectX-8 C8180 on InfiniBand runs 800G XDR ⇒ Quantum-X800 Q3400-RA (DGX SuperPOD B300 XDR RA). */
+  function autoEwSwitch(cat,{ib,oem,nic}){
+    if(ib && nic==="CX8-C8180") return find(cat.switches,"Q3400-RA");
+    return pickSwitch(cat, ib?"NVIDIA":oem, ib?"ib-leaf":"ew-leaf");
+  }
+  /** C8180 on IB = one XDR port per NIC — shared by the builder and the form helpers. */
+  const ibPortsPerNic=(nic,ib)=>ib&&nic&&nic.id==="CX8-C8180"?1:null;
 
   function pickSwitch(cat, oem, role){
     const elig = cat.switches.filter(s=>s.oem===oem && s.roles.includes(role) && s.validated && !s.manualOnly);
@@ -1104,7 +1114,7 @@ const Engine = (() => {
     return fails;
   }
 
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,selfTest,find,evenStripe};
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe};
 })();
 
 /* =====================================================================
@@ -1224,8 +1234,7 @@ function buildBOM(input){
       mg:{downG,links800,ports1,s1,ports2,s2,twinHost:Math.ceil(downG/800)},
       proof:{nodesInBlock:totalN,downG,upG:downG,ratio:"1.00 : 1 (non-blocking)",cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu);
-  let ewSwitch = E.pickSwitch(C,isIB?"NVIDIA":input.ewoem, isIB?"ib-leaf":"ew-leaf");
-  if(ibXdrNic && input.ewswmode!=="manual") ewSwitch=E.find(C.switches,"Q3400-RA");   /* XDR NIC ⇒ Quantum-X800 per the B300 XDR SuperPOD RA */
+  let ewSwitch = E.autoEwSwitch(C,{ib:isIB,oem:input.ewoem,nic:ewn.id});
   if(input.ewswmode==="manual"&&input.ewswitch){
     const m=E.find(C.switches,input.ewswitch);
     if(m){
@@ -1715,7 +1724,7 @@ const Exporter = {
     if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s = uplink ${p.upG.toLocaleString()} Gb/s (1:1); cages ${p.cagesUsed}/${p.cagesAvail}`);
     if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s ≤ uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (1:1 non-blocking)`);
     if(inc2.ns) out.push(`N-S (converged, per RA): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""} (${bom.nsSwitch.sku}); node attach ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" redundant":" single-homed (flagged)"}`);
-    if(inc2.ew) out.push(`Transport: ${bom.ew.proto==="ib"?CATALOG.rules.transportIB:CATALOG.rules.transport}`);
+    if(inc2.ew) out.push(`Transport: ${bom.ew.proto==="ib"?(bom.ew.xdr?CATALOG.rules.transportXDR:CATALOG.rules.transportIB):CATALOG.rules.transport}`);
     if(inc2.oob) out.push(bom.mixed
       ?`OOB: ${bom.oob.switches.toLocaleString()}× shared 1G mgmt switches, ${bom.oob.cat6.toLocaleString()}× Cat6A (both host groups)`
       :`OOB: ${bom.oob.switches.toLocaleString()}× SN2201 (1/SU), ${bom.oob.cat6.toLocaleString()}× Cat6A, ${bom.oob.up100.toLocaleString()}×100G uplinks`);
@@ -1904,7 +1913,7 @@ const Exporter = {
       state[id]=b.dataset.v; onChange&&onChange(b.dataset.v); syncHelpers();
     });
   }
-  seg("ewproto",()=>refreshOptions()); seg("stmode",()=>fillSwitchSelects()); seg("oobspeed"); seg("planes"); seg("nsmode");
+  seg("ewproto",()=>{ if(state.ewproto==="ib"&&$("ewnic").value==="CX8-C8180") setSeg("planes","1"); refreshOptions(); }); seg("stmode",()=>fillSwitchSelects()); seg("oobspeed"); seg("planes"); seg("nsmode");
   seg("dmode",()=>applyDmode());
   /* RA mode: every downstream choice locked to the RA-validated path. Custom: everything opens. */
   function applyDmode(){
@@ -1979,7 +1988,7 @@ const Exporter = {
     };
     mk1("ewswitch","ewswitch-help",state.ewswmode,
       CATALOG.switches.filter(s=> ib ? s.proto==="ib" : (s.oem===$("ewoem").value && s.roles.includes("ew-leaf"))),
-      Engine.pickSwitch(CATALOG, ib?"NVIDIA":$("ewoem").value, ib?"ib-leaf":"ew-leaf"));
+      Engine.autoEwSwitch(CATALOG,{ib,oem:$("ewoem").value,nic:$("ewnic").value}));
     mk1("nsswitch","nsswitch-help",state.nsswmode,
       CATALOG.switches.filter(s=>s.oem===$("nsoem").value && s.roles.includes("ns-leaf")),
       Engine.pickSwitch(CATALOG,$("nsoem").value,"ns-leaf"));
@@ -2010,8 +2019,9 @@ const Exporter = {
     $("gph-help").className="help"+(gphOK?"":" warn");
     $("ewnic-help").textContent = `OPN ${ewn.sku} (${ewn.life}) — ${ewn.ports}×${ewn.speedG}G ${ewn.ff}${ewn.rec?" · RA-recommended":""}${ewn.note?" · "+ewn.note:""}`;
     $("ewnic-help").className="help"+(ewn.speedG<400?" warn":"");
-    const effP=(ewn.onePortOn||[]).includes(gpu.id)?1:ewn.ports;
-    const legs=effP*ewnn, legsExp=gpu.ewLegs||gph, lpg=legsExp/gph;
+    const ibSelH=state.ewproto==="ib", xdrP=Engine.ibPortsPerNic(ewn,ibSelH);
+    const effP=xdrP||((ewn.onePortOn||[]).includes(gpu.id)?1:ewn.ports);
+    const legs=effP*ewnn, legsExp=xdrP?gph:(gpu.ewLegs||gph), lpg=legsExp/gph;
     const srvSel=CATALOG.servers.find(x=>x.id===$("server").value)||null;
     const railOK=legs===legsExp;
     const railTxt = lpg>=2?`${gph} rails (1/GPU) × ${lpg} ports each — twin-planar, one port per plane (RA)`
@@ -2027,8 +2037,9 @@ const Exporter = {
       })();
     $("ewnicn-help").className="help"+(railOK?"":" warn");
     const ibSel = state.ewproto==="ib";
-    $("planes-help").textContent = ibSel?(planes===2?"Published NDR designs are single-plane — dual-plane IB will be flagged.":"Single plane per the DGX SuperPOD H100 NDR pattern."):(planes===2?"Dual plane (A/B): validated pattern per DGX SuperPOD B300 (twin-planar) and the NVL72 dual-plane RA; HGX AI Factory RA publishes single-plane.":"Single plane per the HGX AI Factory RA.");
-    $("ewproto-help").textContent = ibSel?CATALOG.rules.transportIB+" — HGX hosts on IB are outside the published RA: lines are DATASHEET-VERIFIED.":CATALOG.rules.transport;
+    $("planes-help").textContent = (ibSel&&ewn&&ewn.id==="CX8-C8180")?(planes===2?"The Quantum-X800 SuperPOD RA is one rail-optimized fabric — dual plane will be flagged.":"Single fabric per the DGX SuperPOD B300 Quantum-X800 RA."):ibSel?(planes===2?"Published NDR designs are single-plane — dual-plane IB will be flagged.":"Single plane per the DGX SuperPOD H100 NDR pattern."):(planes===2?"Dual plane (A/B): validated pattern per DGX SuperPOD B300 (twin-planar) and the NVL72 dual-plane RA; HGX AI Factory RA publishes single-plane.":"Single plane per the HGX AI Factory RA.");
+    const xdrH = ibSel && ewn && ewn.id==="CX8-C8180";
+    $("ewproto-help").textContent = xdrH?CATALOG.rules.transportXDR+".":ibSel?CATALOG.rules.transportIB+" — HGX hosts on IB are outside the published RA: lines are DATASHEET-VERIFIED.":CATALOG.rules.transport;
     $("ewproto-help").className="help"+(ibSel?" warn":"");
     const oem=$("ewoem").value, sw=Engine.pickSwitch(CATALOG,ibSel?"NVIDIA":oem,ibSel?"ib-leaf":"ew-leaf");
     $("ewoem-help").textContent = sw?`${sw.label} (${sw.sku}) — ${ibSel?"QM97XX UG-validated hardware; topology per SuperPOD H100 pattern":(sw.aiDesign?"OEM AI design validated":"hardware validated from datasheet; optics datasheet-crosschecked where possible (see output); OEM AI design pending ingestion")}.`:"";
@@ -2059,7 +2070,8 @@ const Exporter = {
   ["gpu","ewnic","nsnic","ewoem"].forEach(id=>$(id).addEventListener("change",()=>{
     if(id==="gpu"&&$("gpu").value==="B300-SPOD"&&state.planes!=="2") setSeg("planes","2"); /* B300 is twin-planar per RA */
     if(id==="ewnic"||id==="gpu")$("ewnicn").value=defaultNicCount();
-    if(id==="ewoem") fillSwitchSelects();
+    if(id==="ewnic"&&state.ewproto==="ib"&&$("ewnic").value==="CX8-C8180") setSeg("planes","1");   /* XDR SuperPOD RA: one fabric */
+    if(id==="ewoem"||id==="ewnic") fillSwitchSelects();
     syncHelpers(); }));
   ["nsoem","stoem","ooboem"].forEach(id=>$(id).addEventListener("change",()=>fillSwitchSelects()));
   ["svroem","server"].forEach(id=>$(id).addEventListener("change",()=>{
@@ -3673,7 +3685,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="62";
+  const APP_BUILD="63";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
