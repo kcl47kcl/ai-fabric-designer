@@ -568,7 +568,7 @@ body.zv-open{overflow:hidden}
    CHANGELOG.md). Every entry carries citations and as-of dates.
    ===================================================================== */
 const CATALOG = {
-  catalogVersion:"0.9.2", asOf:"2026-10-16",
+  catalogVersion:"0.10.0", asOf:"2026-10-16",
   sources:{
     RA_HGX:{t:"NVIDIA Enterprise RA: HGX AI Factory (HGX H100, H200, B200), 2-8-9-400 w/ Spectrum-X",d:"last updated Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/"},
     RA_NETHW:{t:"HGX AI Factory RA — Networking Hardware",d:"Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/networking-hardware.html"},
@@ -603,6 +603,10 @@ const CATALOG = {
     CISCO_N9200:{t:"Cisco Nexus 9200 Platform Data Sheet (92348GC-X row: N9K-C92348GC-X — 48×100M/1G Base-T + 4×1/10/25G SFP28 + 2×40/100G QSFP28; Cisco names management-switch use cases)",d:"updated Aug 19, 2026; accessed 2026-10-16",u:"https://www.cisco.com/c/en/us/products/collateral/switches/nexus-9000-series-switches/datasheet-c78-735989.html"},
     ARISTA_7010X:{t:"Arista 7010X Series product page (7010TX-48: 48×10/100/1000 RJ45 + 4×SFP28 1/10/25G; AC/DC and -48C variants)",d:"accessed 2026-10-16",u:"https://www.arista.com/en/products/7010x-series"},
     HPE_EX4100:{t:"HPE Juniper EX4100 Ethernet Switch — Specs (EX4100-48T: 48×1GbE + 4×1/10GbE uplinks + 4×10/25GbE stacking/uplinks; page branded HPE Juniper Networking, juniper.net transitioning to hpe.com)",d:"accessed 2026-10-16",u:"https://www.juniper.net/us/en/products/switches/ex-series/ex4100-ethernet-switch/specs.html"},
+    SPOD_XDR:{t:"NVIDIA SuperPOD with DGX B300 Systems, NVIDIA Quantum-X800 InfiniBand switching and AC Power RA — Architecture (SU = 72 DGX B300 / 576 GPUs; compute fabric table: 1 SU 8 leaf + 4 spine, 576 node-leaf + 576 leaf-spine cables; 2 SU 16+8; 4 SU 32+18; 8 SU 64+36; 18 SU 144+72; 'Contact NVIDIA' at ≥4 SUs; fabric 'designed to support the full SU')",d:"last updated Sep 2, 2026; accessed 2026-10-19",u:"https://docs.nvidia.com/dgx-superpod/reference-architecture/scalable-infrastructure-b300-xdr/latest/dgx-superpod-architecture.html"},
+    SPOD_XDR_NET:{t:"DGX SuperPOD B300 Quantum-X800 RA — Network Fabrics ('Each group of 72 nodes is rail-aligned'; per-rail traffic one hop within the SU; UFM 3.5 nodes on four FNM ports of the Q3400 switches; IB storage MQM9700-NS2R, in-band SN5610, OOB SN2201)",d:"last updated Sep 2, 2026; accessed 2026-10-19",u:"https://docs.nvidia.com/dgx-superpod/reference-architecture/scalable-infrastructure-b300-xdr/latest/network-fabrics.html"},
+    SPOD_XDR_BOM:{t:"DGX SuperPOD B300 Quantum-X800 RA — Major Components, Table 7 (8 SU/576 nodes: Q3400-RA 920-9B36F-00RX-8S0 64 leaf + 36 spine; 4,608 'Transceivers on DGX' 980-9IAT0-00XM00 (printed '980-9IATO'); twin-port OSFP leaf↔DGX 980-9IAH1-00XM00 (printed count 2034 vs 2,304 by the RA's own math); 4,608 twin-port leaf↔spine 980-9IAH1-00XM00; 4,608 DGX-leaf + 4,608 leaf-spine cables 980-9I570-00N030; UFM Appliance 3.5 920-9B020-00RA-0D0 ×2)",d:"last updated Sep 2, 2026; accessed 2026-10-19",u:"https://docs.nvidia.com/dgx-superpod/reference-architecture/scalable-infrastructure-b300-xdr/latest/components.html"},
+    LINKX_XDR16:{t:"NVIDIA MMS4A00 1600Gbps 2xDR4 Twin-port OSFP 2xMPO 1310nm SMF Transceiver (up to 500m) — Part Numbers (980-9IAH1-00XM00 IHS; 980-9IAH0-00XM00 RHS)",d:"last updated Jul 23, 2025; accessed 2026-10-19",u:"https://docs.nvidia.com/networking/display/9IAHX00XMOSFPTCVR1600/Part+Numbers+and+Description"},
     XDR_UM:{t:"NVIDIA Q32xx/Q34xx XDR 800Gb/s InfiniBand Switch Systems User Manual (Quantum-X800 generation: Q3200-RA 920-9B34F-00RX-FS0, 2U enclosure with 2 switches × 36 XDR ports/18 OSFP cages; Q3400-RA 920-9B36F-00RX-8S0, 4U, 144 XDR ports/72 OSFP cages; Q3401-RD 920-9B36P-00RX-8S0 48VDC busbar; Q3450-LD CPO prototype; all managed, lifecycle P-Rel)",d:"last updated Aug 24, 2026; accessed 2026-10-16",u:"https://networking-docs.nvidia.com/xdrswitcheshw"},
     CISCO_OPT:{t:"Cisco OSFP 800G Transceiver Modules Data Sheet (OSFP-800G-VR8: MMF 850 nm, dual MPO-12 APC, 30 m OM3 / 50 m OM4-5, breakout 2×400G-VR4 / 8×100G; DR8 SMF 500 m; platform support via Cisco Transceiver Compatibility Matrix)",d:"updated Jan 5, 2026",u:"https://www.cisco.com/c/en/us/products/collateral/interfaces-modules/transceiver-modules/osfp-800g-transceiver-modules-ds.html"},
     ARISTA_OPT:{t:"Arista Optics Modules and Cables Data Sheet (OSFP-800G-2VSR4: 2×400GBASE-VSR4, dual MPO-12 APC, parallel MMF, 30 m OM3 / 50 m OM4; OSFP-800G-VSR8 MPO-16; OSFP-400G-VSR4 MPO-12 50 m)",d:"accessed 2026-10-14",u:"https://www.arista.com/assets/data/pdf/Datasheets/Transceiver-Data-Sheet.pdf"},
@@ -624,7 +628,7 @@ const CATALOG = {
     {id:"CX7-200-OSFP",label:"ConnectX-7 — 1×200G OSFP (MCX75310AAS-HEAT)",sku:"900-9X766-003N-ST02",ports:1,speedG:200,ff:"OSFP",roles:["ew","ns","storage"],rec:false,ib:true,ibNote:"NDR200 200Gb/s IB (default) / 200GbE per CX-7 UG (HW rev A7+)",validated:true,life:"Mass production",cites:["CX7"],note:"200G rails halve per-GPU bandwidth vs the RA's 400G/GPU — flagged as RA deviation"},
     {id:"CX7-2x200",label:"ConnectX-7 — 2×200G QSFP112 (MCX755106AS-HEAT)",sku:"900-9X7AH-0078-DTZ",alt:"900-9X7AH-0079-DTZ (crypto, MCX755106AC-HEAT)",ports:2,speedG:200,ff:"QSFP112",roles:["ew","ns","storage"],rec:false,ib:true,ibNote:"NDR200 200Gb/s IB / 200GbE (default) per CX-7 UG — Socket-Direct-ready",validated:true,life:"Mass production",cites:["CX7"],note:"200G rails halve per-GPU bandwidth vs the RA's 400G/GPU — flagged as RA deviation"},
     {id:"CX8-C8240",label:"ConnectX-8 C8240 SuperNIC — 2×400GbE QSFP112",sku:"900-9X81Q-00CN-ST0",ports:2,speedG:400,ff:"QSFP112",roles:["ew","ns","storage"],rec:false,ib:true,ibNote:"NDR IB / 400GbE (default) per CX-8 UG",onePortOn:["H100-SXM","H200-SXM","B200-SXM"],onePortNote:"on HGX H100/H200/B200 one of the two ports is enabled at 400Gb/s per the RA (Networking Hardware, Aug 31 2026)",validated:true,life:"Mass production",cites:["RA_NETHW","CX8"]},
-    {id:"CX8-C8180",label:"ConnectX-8 C8180 SuperNIC — 1×OSFP 800G XDR / 2×400GbE",sku:"900-9X81E-00EX-ST0",alt:"900-9X81E-00EX-DT0 (PCIe downstream port); 900-9X81E-00EX-SL0 (C8180L partner-cooled)",ports:2,speedG:400,ff:"OSFP (single cage, 2×400G)",roles:["ew","ns","storage"],rec:false,ib:true,ibNote:"800Gb/s XDR IB default per CX-8 UG; XDR fabric (Quantum-X800) not yet in catalog — NDR operation via Quantum-2 to be confirmed",validated:true,life:"Mass production",cites:["CX8","SPOD_NET"]},
+    {id:"CX8-C8180",label:"ConnectX-8 C8180 SuperNIC — 1×OSFP 800G XDR / 2×400GbE",sku:"900-9X81E-00EX-ST0",alt:"900-9X81E-00EX-DT0 (PCIe downstream port); 900-9X81E-00EX-SL0 (C8180L partner-cooled)",ports:2,speedG:400,ff:"OSFP (single cage, 2×400G)",roles:["ew","ns","storage"],rec:false,ib:true,ibNote:"800Gb/s XDR IB default per CX-8 UG — one XDR port per OSFP cage; Quantum-X800 fabric per the DGX SuperPOD B300 XDR RA; NDR operation via Quantum-2 to be confirmed",validated:true,life:"Mass production",cites:["CX8","SPOD_NET"]},
     {id:"B3220",label:"BlueField-3 B3220 DPU — 2×200GbE QSFP112",sku:"900-9D3B6-00CV-AA0",alt:"900-9D3B6-00SV-AA0",ports:2,speedG:200,ff:"QSFP112",roles:["ns","storage"],rec:true,validated:true,life:"Mass production",cites:["RA_NETHW","BF3"]},
     {id:"B3240",label:"BlueField-3 B3240 DPU — 2×400GbE/NDR QSFP112 (dual-slot FHHL)",sku:"900-9D3B6-00CN-AB0",ports:2,speedG:400,ff:"QSFP112",roles:["ns","storage"],rec:false,validated:true,life:"Mass production",cites:["BF3","RA_HGXB300"],note:"RA-recommended N-S DPU for HGX B300 (HGX AI Factory B300 RA, Components)"}
   ],
@@ -651,7 +655,7 @@ const CATALOG = {
     {id:"QFX5240-64OD",label:"HPE Juniper QFX5240-64OD — 64×800G OSFP",sku:"QFX5240-64OD",alt:"QFX5240-64QD (QSFP-DD variant)",ports800:64,ffSwitch:"OSFP",roles:["ew-leaf","ew-spine","ew-sspine","ns-leaf","ns-spine","st-leaf"],oem:"HPE",life:"Orderable (datasheet accessed 2026-10-13)",aiDesign:false,aiNeeds:"Juniper AI data-center JVD (validated design) ingestion for Juniper-specific topology rules",validated:true,cites:["JUNIPER"]},
     {id:"QM9700",label:"NVIDIA Quantum-2 QM9700 — 64×NDR 400G (32 OSFP cages), managed",sku:"920-9B210-00FN-0M0",alt:"920-9B210-00RN-0M2 (C2P airflow, MQM9700-NS2R)",legacy:"MQM9700-NS2F",ports400:64,ffSwitch:"OSFP",proto:"ib",roles:["ib-leaf","ib-spine","ib-st"],oem:"NVIDIA",life:"Mass production",aiDesign:true,validated:true,cites:["QM97X0","SPOD_H100"],note:"onboard subnet manager up to 2,000 nodes"},
     {id:"QM9790",label:"NVIDIA Quantum-2 QM9790 — 64×NDR 400G (32 OSFP cages), externally managed (UFM)",sku:"920-9B210-00FN-0D0",alt:"920-9B210-00RN-0D0 (C2P airflow, MQM9790-NS2R)",legacy:"MQM9790-NS2F",ports400:64,ffSwitch:"OSFP",proto:"ib",roles:["ib-leaf","ib-spine","ib-st"],oem:"NVIDIA",life:"Mass production",aiDesign:true,validated:true,cites:["QM97X0"]},
-    {id:"Q3400-RA",label:"NVIDIA Quantum-X800 Q3400-RA — 144×XDR 800G (72 OSFP cages), 4U, managed",sku:"920-9B36F-00RX-8S0",alt:"920-9B36P-00RX-8S0 (Q3401-RD, 48VDC busbar)",ports800:144,ffSwitch:"OSFP",proto:"ib",xdr:true,manualOnly:true,roles:["ib-leaf","ib-spine","ib-st"],oem:"NVIDIA",life:"P-Rel (XDR Switch Systems UM, Aug 24, 2026)",aiDesign:false,aiNeeds:"NVIDIA Quantum-X800 enterprise RA / SuperPOD XDR tables (none published yet)",validated:true,cites:["XDR_UM"],note:"XDR 800Gb/s generation (Quantum-3) — MANUAL selection only: no enterprise RA or SuperPOD XDR table is published, so the topology shown follows the NDR SuperPOD pattern as a placeholder and the fabric is flagged"},
+    {id:"Q3400-RA",label:"NVIDIA Quantum-X800 Q3400-RA — 144×XDR 800G (72 OSFP cages), 4U, managed",sku:"920-9B36F-00RX-8S0",alt:"920-9B36P-00RX-8S0 (Q3401-RD, 48VDC busbar)",ports800:144,ffSwitch:"OSFP",proto:"ib",xdr:true,manualOnly:true,roles:["ib-leaf","ib-spine","ib-st"],oem:"NVIDIA",life:"P-Rel (XDR Switch Systems UM, Aug 24, 2026)",aiDesign:true,validated:true,cites:["XDR_UM","SPOD_XDR_BOM"],note:"XDR 800Gb/s (Quantum-3) — the DGX SuperPOD B300 Quantum-X800 RA compute leaf/spine (Sep 2, 2026): SU = 72 nodes, 8 rail leaves (72↓/72↑); auto-selected for ConnectX-8 C8180 on InfiniBand"},
     {id:"Q3200-RA",label:"NVIDIA Quantum-X800 Q3200-RA — 2 switches × 36×XDR 800G (18 OSFP cages each), 2U, managed",sku:"920-9B34F-00RX-FS0",ports800:72,ffSwitch:"OSFP",proto:"ib",xdr:true,manualOnly:true,roles:["ib-leaf","ib-spine","ib-st"],oem:"NVIDIA",life:"P-Rel (XDR Switch Systems UM, Aug 24, 2026)",aiDesign:false,aiNeeds:"NVIDIA Quantum-X800 enterprise RA / SuperPOD XDR tables (none published yet)",validated:true,cites:["XDR_UM"],note:"XDR 800Gb/s (Quantum-3) dual-switch enclosure — MANUAL selection only; same placeholder-topology flag as Q3400-RA"},
     {id:"SN2201",label:"NVIDIA SN2201 — 48×1GBase-T RJ45 + 4×QSFP28 100G",sku:"920-9N110-00F1-0C0",alt:"920-9N110-00R1-0C0 (C2P airflow)",ports1G:48,up100:4,upDesc:"2 of 4×QSFP28 100G per switch",roles:["oob"],oem:"NVIDIA",life:"Mass production",aiDesign:true,validated:true,cites:["RA_NETHW","SN2201","SPOD_NET"]},
     {id:"N92348GC-X",label:"Cisco Nexus 92348GC-X — 48×100M/1G Base-T + 4×1/10/25G SFP28 + 2×40/100G",sku:"N9K-C92348GC-X",ports1G:48,upDesc:"SFP28/QSFP28 uplinks per datasheet",roles:["oob"],oem:"Cisco",manualOnly:true,life:"Orderable (Nexus 9200 DS, Aug 19, 2026)",aiDesign:false,validated:true,cites:["CISCO_N9200"],note:"Cisco names management-switch use cases — OOB outside the NVIDIA RA (flagged)"},
@@ -664,6 +668,9 @@ const CATALOG = {
   optics:{
     twin800:{sku:"MMA4Z00-NS",label:"800G Twin-port OSFP 2×SR4 MMF, 2×MPO-12/APC, 50 m, finned-top",cites:["LINKX"],validated:true},
     q112_400:{sku:"MMA1Z00-NS400",label:"400G QSFP112 SR4 MMF, MPO-12/APC, 50 m (IB+Eth; 200G documented via 1:2 splitter, two channels active)",cites:["LINKX","LINKX_Q112"],validated:true},
+    xdr_host:{sku:"980-9IAT0-00XM00",label:"800G XDR single-port OSFP DR4 transceiver for ConnectX-8, MPO, 1310 nm SMF, 500 m, RHS",cites:["SPOD_XDR_BOM","CX8_FWRN"],validated:true},
+    xdr_twin:{sku:"980-9IAH1-00XM00",label:"1.6T twin-port OSFP 2×DR4 transceiver (MMS4A00), 2×MPO, 1310 nm SMF, 500 m, IHS — 2×800G XDR per Q3400 cage",cites:["SPOD_XDR_BOM","LINKX_XDR16"],validated:true},
+    xdr_cable:{sku:"980-9I570-00N030",label:"Fiber cable as listed in the RA Table 7 (NVIDIA's CX-8 validated-cables list describes this OPN as MMF MPO12 APC to MPO12 APC, 30 m)",cites:["SPOD_XDR_BOM","CX8_FWRN"],validated:false},
     twin800flt:{sku:"MMA4Z00-NS-FLT",opn:"980-9I51A-00NS00",label:"800G Twin-port OSFP 2×SR4 MMF (2×400G), 2×MPO-12/APC, 850 nm, 50 m, flat top — one per ConnectX-8 OSFP cage",cites:["CX8_FWRN","LINKX_NS_ORD"],validated:true},
     osfp_400:{sku:"MMA4Z00-NS400",label:"400G Single-port OSFP SR4 MMF, MPO-12/APC, 50 m (OSFP NIC ports; IB+Eth; 200G/NDR200 documented via 1:2 splitter)",cites:["LINKX","LINKX_OSFP400"],validated:true}
   },
@@ -706,6 +713,8 @@ const CATALOG = {
     ],
     spod:{nodes:64,linksPerNode:16,planes:2,speedG:400,leaf:16,spine:8,cite:"SPOD"},
     ib:{suNodes:32,leavesPerSU:8,spineBySU:[4,8,16,16],maxNodesPublished:127,cite:"SPOD_H100"},
+    /* DGX SuperPOD B300 + Quantum-X800 (Q3400-RA, 144×XDR 800G): SU = 72 nodes, 8 rail leaves/SU (72↓/72↑) */
+    xdr:{suNodes:72,leavesPerSU:8,leafUp:72,spineDown:144,rows:[{su:1,leaf:8,spine:4},{su:2,leaf:16,spine:8},{su:4,leaf:32,spine:18},{su:8,leaf:64,spine:36},{su:18,leaf:144,spine:72}],cite:"SPOD_XDR"},
     rtx:{maxNodes:32,cite:"RTXPRO",
       ew:[{nodes:16,leaf:2,xH:64,xLS:32,xSS:32,cH:64,cSS:32},{nodes:32,leaf:2,xH:128,xLS:64,xSS:64,cH:128,cSS:64}],
       ns:[{nodes:16,merged:true,leaf:0,pCPU:8,pStor:4,pMgmt:4,pCust:8,pSupp:4,pISL:0,xTot:104,xSw:25,xSS:0,cTot:104,cSS:0},
@@ -742,8 +751,8 @@ const Engine = (() => {
       spine, and per-leaf uplinks are rounded UP to a multiple of S (never below 1:1). Pick the smallest S
       that fits the spine down-radix (≤64) and leaf up-radix (≤32). groups=[{leaves,up}] per plane.
       Returns null when no flat 2-tier striping fits (caller moves to the next regime). */
-  function evenStripe(groups,downRadix=64,upRadix=32){
-    for(const S of [2,4,8,16,32]){
+  function evenStripe(groups,downRadix=64,upRadix=32,cands=[2,4,8,16,32]){
+    for(const S of cands){
       const g=groups.filter(x=>x.leaves>0).map(x=>({...x,k:Math.ceil(x.up/S)}));
       if(g.some(x=>x.k*S>upRadix)) continue;
       const spineDown=g.reduce((a,x)=>a+x.leaves*x.k,0);
@@ -871,6 +880,27 @@ const Engine = (() => {
       splitters:0,
       proof:{nodesInBlock:nIn,downG,upG,cagesUsed:nIn+ceil(nIn/2)+ceil(nIn/2),cagesAvail:64,ratio:"1:1",
         note:"QM9700: 32 down + 32 up 400G ports per leaf"+(tier===3?" · pod spine 32↓/32↑ · core 64↓":"")}};
+  }
+
+  /** DGX SuperPOD B300 + Quantum-X800 XDR (Q3400-RA, 144×800G): SU = 72 nodes, 8 rails (1×800G XDR per GPU),
+      8 rail leaves per SU (72↓/72↑). Published rows verbatim; between rows: even striping with spine counts that
+      divide 72 (reproduces every published row). Fabric built for the FULL SU per the RA. */
+  function sizeEWXDR(cat,nodes){
+    const g=cat.golden.xdr, rails=8, sus=ceil(nodes/g.suNodes), leaf=g.leavesPerSU*sus;
+    const row=g.rows.find(r=>r.su===sus);
+    const st=evenStripe([{leaves:leaf,up:g.leafUp}],g.spineDown,g.leafUp,[2,4,6,8,12,18,24,36,72]);
+    let spine, basis, beyond=false, over=false;
+    if(row){ spine=row.spine; basis=`DGX SuperPOD B300 Quantum-X800 RA published row: ${sus} SU → ${row.leaf} leaf + ${row.spine} spine (each leaf 72 down / 72 up, ${g.leafUp/row.spine} uplinks to each spine)`; }
+    else if(st){ spine=st.S; beyond=true; basis=`between published rows: ${sus} SUs → ${leaf} leaf × 72 up, ${st.S} spines (even divisor of 72 — same rule reproduces every published row), ${st.groups[0].k} uplinks per leaf per spine, ${st.spineDown}/144 spine ports`; }
+    else { over=true; beyond=true; spine=2*ceil(leaf*g.leafUp/g.spineDown/2); basis=`${sus} SUs exceeds the 2-tier Q3400 radix (≤18 SUs at 144-port spines) — a 3rd tier is required and no published table covers it`; }
+    const hostLinks=nodes*rails, links=leaf*g.leafUp;
+    const nIn=nodes-(sus-1)*g.suNodes;
+    return {proto:"ib",xdr:true,planes:1,railSpeed:800,legsPerCage:2,railsPerPlane:rails,leavesPerBlock:g.leavesPerSU,nodesPerBlock:g.suNodes,
+      blocks:sus,leaf,spine,sspine:0,tier:2,tier3:false,pods:0,podNodes:0,coreGroups:0,coreGroupSize:0,linksSC:0,
+      hostLinks,links800:links,links400:null,linksSS:links,ssLinkG:800,spineBasis:basis,beyond,over,published:!!row,
+      xH:hostLinks,xLS:ceil(hostLinks/2),xSS:links,cH:hostLinks,cSS:links,splitters:0,stripe:null,
+      proof:{nodesInBlock:nIn,downG:nIn*800,upG:g.leafUp*800,cagesUsed:ceil(nIn/2)+g.leafUp/2,cagesAvail:72,ratio:"1:1",
+        note:"Q3400-RA: 144×XDR 800G — leaf 72 down / 72 up; fabric built for the full 72-node SU (RA)"}};
   }
 
   /** RTX PRO AI Factory (2-8-5-200): collapsed SN5610 leaf pair, 4×400G rails/node, ISL-interconnected,
@@ -1074,7 +1104,7 @@ const Engine = (() => {
     return fails;
   }
 
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeNS,sizeOOB,headroom,pickSwitch,selfTest,find,evenStripe};
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,selfTest,find,evenStripe};
 })();
 
 /* =====================================================================
@@ -1165,7 +1195,9 @@ function buildBOM(input){
   const isIB = input.ewproto==="ib";
   const isRTX = gpu.profile==="rtx";
   /* dual-port NICs that the RA runs single-port on this GPU platform (e.g. C8240 on HGX H100/H200/B200) */
-  const effPorts = (ewn.onePortOn||[]).includes(input.gpu) ? 1 : ewn.ports;
+  /* ConnectX-8 C8180 on InfiniBand runs ONE 800G XDR port per OSFP cage (CX-8 UM: XDR IB default) */
+  const ibXdrNic = isIB && ewn.id==="CX8-C8180";
+  const effPorts = ibXdrNic ? 1 : ((ewn.onePortOn||[]).includes(input.gpu) ? 1 : ewn.ports);
   const ewnEff = effPorts!==ewn.ports ? {...ewn,ports:effPorts} : ewn;
   /* Host-side optic per NIC CAGE (CX-8 FW RN v40.50.1002): a ConnectX-8 C8180 has ONE OSFP cage carrying
      2×400G — it takes ONE twin-port flat-top MMA4Z00-NS-FLT, never two single-port modules. */
@@ -1174,8 +1206,8 @@ function buildBOM(input){
     if(/single cage, 2×400G/.test(n.ff||"")&&portsPerNic>=2){ twinFltUsed=true; return {o:C.optics.twin800flt,per:2,twin:true}; }
     return {o:(n.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400,per:1,twin:false};
   };
-  if(effPorts!==ewn.ports) notes.push(`${ewn.id} on ${gpu.label}: ${ewn.onePortNote}.`);
-  const ew = mixed? (()=>{   /* generic 1:1 Clos on total mixed bandwidth — no RA covers mixed GPU fabrics */
+  if(effPorts!==ewn.ports&&!ibXdrNic) notes.push(`${ewn.id} on ${gpu.label}: ${ewn.onePortNote}.`);
+  let ew = mixed? (()=>{   /* generic 1:1 Clos on total mixed bandwidth — no RA covers mixed GPU fabrics */
     const ports1=input.nodes*input.ewnicn*effPorts, s1=ewn.speedG||400;
     const ports2=g2.nodes*g2.ewnicn*g2.eff, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
@@ -1193,6 +1225,7 @@ function buildBOM(input){
       proof:{nodesInBlock:totalN,downG,upG:downG,ratio:"1.00 : 1 (non-blocking)",cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu);
   let ewSwitch = E.pickSwitch(C,isIB?"NVIDIA":input.ewoem, isIB?"ib-leaf":"ew-leaf");
+  if(ibXdrNic && input.ewswmode!=="manual") ewSwitch=E.find(C.switches,"Q3400-RA");   /* XDR NIC ⇒ Quantum-X800 per the B300 XDR SuperPOD RA */
   if(input.ewswmode==="manual"&&input.ewswitch){
     const m=E.find(C.switches,input.ewswitch);
     if(m){
@@ -1213,11 +1246,14 @@ function buildBOM(input){
     else if(ewSwitch.id==="N9164E-NS4-O")
       notes.push(`Cisco E-W: N9164E-NS4-O selected — NVIDIA Spectrum-4 ASIC with adaptive routing (DS Jun 11, 2026), silicon-matched to the rail-optimized Spectrum-X pattern this design follows; Cisco positions the N9100 CRA for full NVIDIA NCP RA compliance (FAQ Mar 16, 2026).`);
   }
-  const xdrSel=!!(ewSwitch&&ewSwitch.xdr);
+  /* Q3400-RA on IB ⇒ size per the DGX SuperPOD B300 Quantum-X800 RA (replaces the old NDR placeholder) */
+  const xdrRA = isIB && !mixed && ewSwitch && ewSwitch.id==="Q3400-RA";
+  if(xdrRA) ew = E.sizeEWXDR(C,input.nodes);
+  const xdrSel=!!(ewSwitch&&ewSwitch.xdr) && !xdrRA;
   if(xdrSel) flags.push(V.flag(`${ewSwitch.id} (Quantum-X800 / Quantum-3 XDR) E-W fabric`,
     `no NVIDIA enterprise RA or SuperPOD XDR table is published — the leaf/spine counts shown follow the NDR SuperPOD H100 pattern (QM9700 radix) as a PLACEHOLDER only; an NVIDIA XDR reference design, the Q32xx/Q34xx UM Interfaces section (NDR-mode operation, port splits) and the LinkX XDR transceiver family must be ingested before this fabric can be validated`));
   const hostLegs = effPorts*input.ewnicn;
-  const legsExpected = gpu.ewLegs||input.gph;
+  const legsExpected = ibXdrNic ? input.gph : (gpu.ewLegs||input.gph);   /* XDR SuperPOD: 1×800G per GPU */
   if(!mixed&&hostLegs!==legsExpected) flags.push(V.flag(`${input.ewnicn}× ${ewn.id} per host = ${hostLegs} E-W ports (RA expects ${legsExpected})`,
     isRTX?`RTX PRO RA specifies 4×400G rails per node (2 GPUs/rail, B3140H) — Table 6`
          :legsExpected>input.gph
@@ -1279,6 +1315,45 @@ function buildBOM(input){
       qty:ew.xSS, math:`${mgf.links800.toLocaleString()} × 800G links × 2 ends (1:1)`,cites:mCites,status:mSt,needs:mxmVal?null:mxm.needs}));
     lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+" — leaf↔spine (E-W, mixed groups)",role:"Fiber trunk",spareable:true,
       qty:ew.cSS, math:`${mgf.links800.toLocaleString()} × 800G links × 2 MPO-12 per twin-port`,cites:C.fiber.straight.cites,status:"VERIFIED"}));
+  } else if(xdrRA){
+    /* ===== XDR InfiniBand per the DGX SuperPOD B300 Quantum-X800 RA (Sep 2, 2026) ===== */
+    const g=C.golden.xdr, sus=ew.blocks, rem=input.nodes%g.suNodes;
+    const raSt=ew.published?"VALIDATED":"VERIFIED";
+    notes.push(`E-W per the DGX SuperPOD B300 Quantum-X800 InfiniBand RA (Sep 2, 2026): SU = 72 nodes, rail-aligned — 8 rails (one 800G XDR port per GPU via ConnectX-8), 8 Q3400-RA leaves per SU (72 down / 72 up), spines per the published table. ${ew.spineBasis}.`);
+    if(rem) notes.push(`Partial SU: ${input.nodes} nodes = ${sus} SU(s), last SU ${rem} of 72 nodes. The RA designs the fabric for the FULL SU ("designed to support the full SU, leaving unused portions in place") — leaves, spines and leaf↔spine links are sized for ${sus} full SU(s); node-side optics and cables are for the ${input.nodes} real nodes only.`);
+    if(sus>=4) flags.push(V.flag(`${sus} SUs on the Quantum-X800 SuperPOD`,`the RA says to contact NVIDIA for DGX SuperPOD solutions of four SUs or more`));
+    if(ew.beyond&&!ew.over) flags.push(V.flag(`${sus} SUs — between published Quantum-X800 rows`,`spine count derived with the RA's own striping rule (reproduces rows 1/2/4/8/18 SU exactly) — no published row for ${sus} SUs; NVIDIA confirmation required`));
+    if(ew.over) flags.push(V.flag(`${sus} SUs exceeds the 2-tier Q3400 fabric`,`the 144-port spine radix caps a 2-tier rail-optimized fabric at 18 SUs (1,296 nodes); a 3rd tier is required and no published Quantum-X800 table covers it — NVIDIA large-scale engagement`));
+    if(input.planes===2) flags.push(V.flag("Dual plane selected on the Quantum-X800 SuperPOD","the RA compute fabric is ONE rail-optimized fat tree (8 XDR rails per node) — sized as published (single fabric)"));
+    if(ewn.id!=="CX8-C8180") flags.push(V.flag(`${ewn.id} on the Quantum-X800 XDR fabric`,`the RA attaches DGX B300 ConnectX-8 at 800G XDR — ${ewn.id} is not an XDR adapter; needs NVIDIA confirmation of NDR-mode operation on Q3400 ports`));
+    if(!srv||srv.id!=="DGX-B300") flags.push(V.flag(`Quantum-X800 SuperPOD RA applied to ${srv?srv.label:"a generic host"}`,`the RA is written for DGX B300; the host-side module 980-9IAT0-00XM00 is described by NVIDIA as "single port transceiver for ConnectX-8 Mezz Card" (lifecycle EVT) — confirm the module for this platform's ConnectX-8 OSFP cages with ${srv?srv.oem:"the server OEM"} and NVIDIA`));
+    flags.push(V.flag("RA Table 7 cable 980-9I570-00N030 — fiber-type conflict",`the RA lists 980-9I570-00N030 for DGX-leaf and leaf-spine links, but its transceivers (980-9IAT0-00XM00, 980-9IAH1-00XM00) are 1310 nm SMF DR4 and NVIDIA's CX-8 validated-cables list describes 980-9I570-00N030 as MMF MPO12 APC 30 m — the correct SMF MPO cable OPN must be confirmed with NVIDIA before ordering`));
+
+    lines.push(V.line({fabric:"ew",sku:ewn.sku||"—",desc:ewn.label+` — XDR InfiniBand mode, 1×800G per NIC (${ewn.ibNote||"per NIC UG"})`+builtInTxt,role:"NIC / HCA",builtIn:nicBuiltIn,
+      qty:input.nodes*input.ewnicn, math:`${input.nodes} hosts × ${input.ewnicn}/host = ${hostLegs}×800G XDR rails/host`,
+      status:ewn.id==="CX8-C8180"?"VERIFIED":"UNVALIDATED",needs:ewn.id==="CX8-C8180"?null:"XDR-capable adapter required (RA: ConnectX-8)",cites:[...(ewn.cites||[]),"SPOD_XDR"]}));
+    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — XDR compute leaf (rail-aligned, 72 down / 72 up)`,role:"Leaf",
+      qty:ew.leaf, math:`8 rail leaves per SU × ${sus} SU(s)${rem?` (last SU ${rem} of 72 nodes — full SU per the RA)`:""}`,
+      status:raSt,cites:["SPOD_XDR","SPOD_XDR_BOM","XDR_UM"]}));
+    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — XDR compute spine`,role:"Spine",
+      qty:ew.spine, math:ew.spineBasis,status:ew.over?"UNVALIDATED":raSt,needs:ew.over?"3-tier Quantum-X800 design (not published)":null,cites:["SPOD_XDR","SPOD_XDR_BOM"]}));
+    lines.push(V.line({fabric:"ew",sku:C.optics.xdr_host.sku,desc:C.optics.xdr_host.label+" — host side, one per ConnectX-8 OSFP cage",role:"Optic",spareable:true,
+      qty:ew.xH, math:`${input.nodes} hosts × ${hostLegs} XDR ports (RA Table 7: 'Transceivers on DGX', 576 nodes → 4,608)`,
+      status:"VALIDATED",cites:C.optics.xdr_host.cites}));
+    lines.push(V.line({fabric:"ew",sku:C.optics.xdr_twin.sku,desc:C.optics.xdr_twin.label+" — leaf, node-facing",role:"Optic",spareable:true,
+      qty:ew.xLS, math:`${ew.xH.toLocaleString()} node links ÷ 2 per twin-port cage (RA Table 7 prints 2034 for 576 nodes; its own math gives 2,304)`,
+      status:"VALIDATED",cites:C.optics.xdr_twin.cites}));
+    lines.push(V.line({fabric:"ew",sku:C.optics.xdr_twin.sku,desc:C.optics.xdr_twin.label+" — leaf↔spine, both ends",role:"Optic",spareable:true,
+      qty:ew.xSS, math:`${ew.linksSS.toLocaleString()} × 800G links × 2 ends ÷ 2 per twin-port (RA Table 7: 4,608 for 576 nodes)`,
+      status:ew.over?"UNVALIDATED":"VALIDATED",cites:C.optics.xdr_twin.cites}));
+    lines.push(V.line({fabric:"fiber",sku:C.optics.xdr_cable.sku,desc:C.optics.xdr_cable.label+" — node↔leaf (XDR)",role:"Fiber trunk",spareable:true,
+      qty:ew.cH, math:`1 per 800G node link × ${ew.cH.toLocaleString()} (RA Table 7 'DGX-Leaf Cable')`,
+      status:"UNVALIDATED",needs:"SMF MPO cable OPN for 1310 nm DR4 XDR optics — the RA-listed OPN is described by NVIDIA as MMF (fiber-type conflict)",cites:C.optics.xdr_cable.cites}));
+    lines.push(V.line({fabric:"fiber",sku:C.optics.xdr_cable.sku,desc:C.optics.xdr_cable.label+" — leaf↔spine (XDR)",role:"Fiber trunk",spareable:true,
+      qty:ew.cSS, math:`1 per 800G leaf↔spine link × ${ew.cSS.toLocaleString()} (RA Table 7 'Leaf-Spine Cable')`,
+      status:"UNVALIDATED",needs:"SMF MPO cable OPN for 1310 nm DR4 XDR optics — the RA-listed OPN is described by NVIDIA as MMF (fiber-type conflict)",cites:C.optics.xdr_cable.cites}));
+    lines.push(V.line({fabric:"ew",sku:"920-9B020-00RA-0D0",desc:"NVIDIA UFM Appliance 3.5 — fabric management, on four FNM ports of the Q3400 switches (RA)",role:"Fabric mgmt",
+      qty:2, math:"RA Table 7 lists 2 for the 8-SU / 576-node SuperPOD (HA pair)",status:"VALIDATED",cites:["SPOD_XDR_BOM","SPOD_XDR_NET"]}));
   } else if(isIB){
     /* ===== InfiniBand E-W (outside the HGX RA: datasheet-crosschecked, SuperPOD H100 NDR pattern) ===== */
     notes.push(`InfiniBand E-W on HGX-class hosts is OUTSIDE any published NVIDIA RA (the published NDR RA is DGX SuperPOD H100). Topology follows that RA's pattern (SU = 32 nodes, 8 rail-aligned leaves/SU, published spine rows); every component pairing below is crosschecked end-to-end from the QM97XX, ConnectX, and LinkX documents and marked DATASHEET-VERIFIED rather than VALIDATED.`);
@@ -1636,7 +1711,7 @@ const Exporter = {
     const inc2=bom.inc||{ew:1,ns:1,st:1,oob:1};
     if(inc2.ew) out.push(bom.mixed
       ?`E-W (Ethernet, mixed host groups): generic 1:1 Clos — ${bom.ew.mg.downG.toLocaleString()}G host bandwidth (${bom.ew.mg.ports1.toLocaleString()}×${bom.ew.mg.s1}G + ${bom.ew.mg.ports2.toLocaleString()}×${bom.ew.mg.s2}G) ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${bom.ewSwitch.sku}) — UNVALIDATED (no NVIDIA RA covers heterogeneous compute fabrics)`
-      :`E-W (${bom.ew.proto==="ib"?"NDR InfiniBand":"Ethernet"}): rail-optimized, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine (UNVALIDATED sizing)`:""} (${bom.ewSwitch.sku}); ${bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap}`);
+      :`E-W (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}): rail-optimized, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine (UNVALIDATED sizing)`:""} (${bom.ewSwitch.sku}); ${bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap}`);
     if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s = uplink ${p.upG.toLocaleString()} Gb/s (1:1); cages ${p.cagesUsed}/${p.cagesAvail}`);
     if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s ≤ uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (1:1 non-blocking)`);
     if(inc2.ns) out.push(`N-S (converged, per RA): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""} (${bom.nsSwitch.sku}); node attach ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" redundant":" single-homed (flagged)"}`);
@@ -2249,7 +2324,7 @@ const Exporter = {
   const Dband=(y,title,sub,stroke,kind,label,dashed,idx)=>Dclk(kind,label||title,
     `${Dbox(130,y,640,46,stroke,dashed)}<text x="450" y="${y+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">${title}</text>${sub?`<text x="450" y="${y+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${sub}</text>`:""}${kind?`<text x="758" y="${y+16}" text-anchor="end" fill="var(--brand)" font-size="10" font-weight="700">▸ expand</text>`:""}`,idx);
   const Dtrunk=(y1,y2,lbl)=>`<line x1="440" y1="${y1}" x2="440" y2="${y2}" stroke="var(--border)" stroke-width="2.4"/><line x1="450" y1="${y1}" x2="450" y2="${y2}" stroke="var(--border)" stroke-width="2.4"/><line x1="460" y1="${y1}" x2="460" y2="${y2}" stroke="var(--border)" stroke-width="2.4"/>${lbl?`<text x="472" y="${(y1+y2)/2+4}" fill="var(--muted)" font-size="10">${lbl}</text>`:""}`;
-  const suDef=b=>b.ew.proto==="ib"?{n:32,c:Math.ceil(b.input.nodes/32)}:{n:4,c:b.oob.sus};
+  const suDef=b=>b.ew.xdr?{n:72,c:Math.ceil(b.input.nodes/72)}:b.ew.proto==="ib"?{n:32,c:Math.ceil(b.input.nodes/32)}:{n:4,c:b.oob.sus};
   /* Real rail count: a rail is a per-GPU index. A dual-port-per-GPU host in a SINGLE plane
      (off-RA B300 deviation) still has gph rails — each with 2 ports — never 2×gph "rails". */
   const DrailsInfo=b=>{const ew=b.ew,g=b.input.gph;
@@ -2359,7 +2434,7 @@ const Exporter = {
         s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${sw} total`,32,"spine","podspine","var(--muted)","32↓ pod / 32↑ its group").svg;
       } else {
         s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${sw}`,ew.spine/ew.planes,"spine","spine2t","var(--muted)",
-          isIB?(ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
+          isIB?(ew.xdr?(ew.published?`SuperPOD B300 XDR row (${ew.blocks} SU)`:"even-striped, between XDR rows"):ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
               :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${Math.ceil(ew.blocks/4)}`:"flat 2-tier · 1:1")).svg;
       }
       y+=66; s+=Dtrunk(y,y+26,`${(ew.links800??ew.links400).toLocaleString()}×${ew.ssLinkG}G leaf↔spine`); y+=26;
@@ -2371,15 +2446,15 @@ const Exporter = {
       s+=`<line x1="830" y1="${y+33}" x2="840" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.6"/>`
         +Dbox(840,y+10,56,46,"var(--rail3)",true)
         +`<text x="868" y="${y+30}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">UFM</text>`
-        +`<text x="868" y="${y+45}" text-anchor="middle" fill="var(--muted)" font-size="7.5">${b.input.nodes>2000?"QM9790 fleet":"node slot"}</text>`;
+        +`<text x="868" y="${y+45}" text-anchor="middle" fill="var(--muted)" font-size="7.5">${b.ew.xdr?"Q3400 FNM":b.input.nodes>2000?"QM9790 fleet":"node slot"}</text>`;
     }
     y+=66;
     const suY=y+42, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n);
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--rail1)")+r.svg;
     const ri=DrailsInfo(b);
     return Dsvg(suY+76,"E-W fabric overview",s,
-      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · ${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports (${ri.rails} rails/host${ri.dbl?", 2 ports each":""}) · 1:1 non-blocking at every tier${isIB?" · NDR InfiniBand":""}`,
-      isIB?`SU boxes are GPU hosts · every outlined block expands · SM: ${b.input.nodes>2000?"UFM on externally managed QM9790 (>2,000 nodes)":"QM9700 onboard (≤2,000 nodes)"} — UFM attaches to the fabric per RA`
+      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · ${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports (${ri.rails} rails/host${ri.dbl?", 2 ports each":""}) · 1:1 non-blocking at every tier${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):""}`,
+      isIB?`SU boxes are GPU hosts · every outlined block expands · ${b.ew.xdr?"UFM 3.5 appliances on Q3400 FNM ports (Quantum-X800 SuperPOD RA)":`SM: ${b.input.nodes>2000?"UFM on externally managed QM9790 (>2,000 nodes)":"QM9700 onboard (≤2,000 nodes)"} — UFM attaches to the fabric per RA`}`
           :"SU boxes are GPU hosts (endpoints); switches live in the tiers above — every outlined block expands");
   }
   function nsOv(b){
@@ -2809,7 +2884,7 @@ const Exporter = {
       s+=`<line x1="770" y1="${leafY+23}" x2="788" y2="${leafY+23}" stroke="var(--rail3)" stroke-width="1.6" stroke-dasharray="3 3"/>`
         +Dbox(788,leafY,102,46,"var(--rail3)",true)
         +`<text x="839" y="${leafY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">UFM</text>`
-        +`<text x="839" y="${leafY+36}" text-anchor="middle" fill="var(--muted)" font-size="8">${b.input.nodes>2000?"QM9790 fleet mgmt":"leaf-attached (node slot)"}${dual?" · per plane":""}</text>`;
+        +`<text x="839" y="${leafY+36}" text-anchor="middle" fill="var(--muted)" font-size="8">${b.ew.xdr?"Q3400 FNM ports":b.input.nodes>2000?"QM9790 fleet mgmt":"leaf-attached (node slot)"}${dual?" · per plane":""}</text>`;
     }
     y+=46; s+=Dtrunk(y,y+24,`${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports`); y+=24;
     const ri=DrailsInfo(b);
@@ -2817,7 +2892,7 @@ const Exporter = {
     y+=46;
     return Dsvg(y+40,"Generalized E-W tier design",s,
       dual?"per-plane design: PLANE A and PLANE B are identical, independent fabrics — no plane-to-plane links; every host attaches to both planes":`rail-optimized: GPU k of every host lands on the leaf serving rail k`,
-      `1:1 non-blocking at every tier${isIB?" · NDR InfiniBand":" · RoCEv2 lossless Ethernet"}`);
+      `1:1 non-blocking at every tier${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):" · RoCEv2 lossless Ethernet"}`);
   }
   /* ---- MIXED-GROUP in-app overviews (Storage / OOB) and detail views ---- */
   const mG=(b,gi)=>{ const i=b.input, g2=b.g2;
@@ -3310,7 +3385,7 @@ const Exporter = {
     return `You are a datacenter network hardware compatibility auditor. Independently verify END-TO-END connectivity of this AI GPU cluster design, reasoning from official OEM documentation you know (NVIDIA LinkX/ConnectX/BlueField/Spectrum/Quantum docs, Dell/Supermicro/Cisco server guides, Cisco/Arista/Juniper switch datasheets). Check EVERY link: NIC port speed & form factor ↔ transceiver model & form factor ↔ fiber type/connector ↔ switch cage form factor, speed and breakout mode. Also check protocol modes (Ethernet vs InfiniBand firmware), rail counts vs GPU count, and port-count feasibility.
 
 DESIGN
-Client: ${i.client||"—"}; ${bom.mixed?`MIXED HOST GROUPS on shared fabrics (no OEM RA covers this — audit extra carefully): group 1 = ${i.nodes} hosts × ${i.gph} GPUs, group 2 = ${bom.g2.nodes} hosts × ${bom.g2.gph}× ${bom.g2.gpu.label}; ${bom.totalGpus} GPUs total, single-plane shared E-W`:`${i.nodes} GPU hosts × ${i.gph} GPUs (${i.nodes*i.gph} GPUs), ${bom.ew.planes===2?"dual-plane":"single-plane"} E-W`}, protocol ${i.ewproto==="ib"?"NDR InfiniBand":"RoCEv2 Ethernet"}.
+Client: ${i.client||"—"}; ${bom.mixed?`MIXED HOST GROUPS on shared fabrics (no OEM RA covers this — audit extra carefully): group 1 = ${i.nodes} hosts × ${i.gph} GPUs, group 2 = ${bom.g2.nodes} hosts × ${bom.g2.gph}× ${bom.g2.gpu.label}; ${bom.totalGpus} GPUs total, single-plane shared E-W`:`${i.nodes} GPU hosts × ${i.gph} GPUs (${i.nodes*i.gph} GPUs), ${bom.ew.planes===2?"dual-plane":"single-plane"} E-W`}, protocol ${i.ewproto==="ib"?(bom.ew.xdr?"XDR InfiniBand (Quantum-X800 SuperPOD RA)":"NDR InfiniBand"):"RoCEv2 Ethernet"}.
 Server platform${bom.mixed?" (group 1)":""}: ${(CATALOG.servers.find(s=>s.id===i.server)||{}).label||"generic"}.${bom.mixed?`
 Server platform (group 2): ${bom.g2.srv?bom.g2.srv.label:"generic host"} — ${bom.g2.ewnicn}× ${nic(bom.g2.ewn.id)} E-W + ${bom.g2.nsnicn}× ${nic(bom.g2.nsn.id)} N-S per host.`:""}
 ${bom.inc.ew?`E-W NIC${bom.mixed?" (group 1)":""}: ${i.ewnicn}× ${nic(i.ewnic)} per host. E-W switch: ${sw(bom.ewSwitch)} — ${bom.ew.leaf} leaf + ${bom.ew.spine} spine${bom.ew.sspine?` + ${bom.ew.sspine} core`:""}${bom.mixed?` shared by both host groups (generic 1:1 Clos, ${bom.ew.mg.downG.toLocaleString()}G ⇒ ${bom.ew.mg.links800}×800G uplinks)`:""}.`:"E-W fabric: EXCLUDED from this design by the user — do not audit it."}
@@ -3357,7 +3432,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
       ${unCount?`<div class="vbanner flagged"><span class="mark">⚠</span><span>${unCount} item${unCount>1?"s":""} need${unCount>1?"":"s"} further OEM evidence — nothing is guessed. <a href="#" id="goto-dt">Open Details &amp; evidence</a> for what's missing.</span></div>`
                :`<div class="vbanner good"><span class="mark">✓</span><span>Every line validated against official OEM documentation — no open flags.</span></div>`}
 
-      <div class="card"><header><h2>Design at a glance</h2><span class="note" style="margin-left:auto">${bom.inc.ew?`${bom.ew.planes===2?"dual-plane (A/B)":"single-plane"} · ${bom.ew.proto==="ib"?"NDR InfiniBand":"RoCEv2 Ethernet"} · `:""}1:1 non-blocking</span></header><div class="body">
+      <div class="card"><header><h2>Design at a glance</h2><span class="note" style="margin-left:auto">${bom.inc.ew?`${bom.ew.planes===2?"dual-plane (A/B)":"single-plane"} · ${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand":"NDR InfiniBand"):"RoCEv2 Ethernet"} · `:""}1:1 non-blocking</span></header><div class="body">
         <div class="fabgrid">
           ${bom.inc.ew?`<div class="fabcard"><div class="fh">Compute E-W ${stIcon(fst.ew)}</div>
             <div class="big">${bom.ew.leaf.toLocaleString()} + ${bom.ew.spine.toLocaleString()}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()}`:""} <small>leaf + spine${bom.ew.sspine?" + core":""}</small></div>
@@ -3431,7 +3506,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
   group 2 = ${bom.g2.nodes.toLocaleString()} hosts ⇒ ${bom.ew.mg.ports2.toLocaleString()} ports @ ${bom.ew.mg.s2}G
   downlink = ${bom.ew.mg.downG.toLocaleString()} Gb/s ⇒ uplink ${bom.ew.mg.links800.toLocaleString()} × 800G = ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (≥ 1:1)
   leaf = ${bom.ew.leaf} shared · spine = ${bom.ew.spine}</div>`:""}
-        ${bom.inc.ew&&!bom.mixed?`<div class="note"><b>E-W topology (${bom.ew.proto==="ib"?"NDR InfiniBand":"Ethernet"}):</b> rail-optimized leaf-spine${bom.ew.sspine?" + super-spine":""}, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.planes} plane(s). ${esc(bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap)}. Blocks of ${bom.ew.nodesPerBlock} nodes; ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine`:""} (${esc(bom.ewSwitch.label)}).</div>
+        ${bom.inc.ew&&!bom.mixed?`<div class="note"><b>E-W topology (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}):</b> rail-optimized leaf-spine${bom.ew.sspine?" + super-spine":""}, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.planes} plane(s). ${esc(bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap)}. Blocks of ${bom.ew.nodesPerBlock} nodes; ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine`:""} (${esc(bom.ewSwitch.label)}).</div>
         <div class="proof">E-W per leaf (fullest block, ${p.nodesInBlock} nodes):
   downlink = ${p.nodesInBlock} nodes × 2 rails × ${bom.ew.railSpeed}G = ${p.downG.toLocaleString()} Gb/s
   uplink   = ${p.upG.toLocaleString()} Gb/s via ${bom.ew.proto==="ib"?"QM9700 400G ports (twin-port OSFP cages)":"800G twin-ports"}
@@ -3598,7 +3673,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="60";
+  const APP_BUILD="61";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
