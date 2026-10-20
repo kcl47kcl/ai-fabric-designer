@@ -600,7 +600,7 @@ body.zv-open{overflow:hidden}
    CHANGELOG.md). Every entry carries citations and as-of dates.
    ===================================================================== */
 const CATALOG = {
-  catalogVersion:"0.10.0", asOf:"2026-10-16",
+  catalogVersion:"0.10.1", asOf:"2026-10-20",
   sources:{
     RA_HGX:{t:"NVIDIA Enterprise RA: HGX AI Factory (HGX H100, H200, B200), 2-8-9-400 w/ Spectrum-X",d:"last updated Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/"},
     RA_NETHW:{t:"HGX AI Factory RA — Networking Hardware",d:"Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/networking-hardware.html"},
@@ -612,6 +612,8 @@ const CATALOG = {
     RTXPRO:{t:"NVIDIA Enterprise RA: RTX PRO AI Factory — Network Logical Architecture (2-8-5-200 node: 8× RTX PRO 6000 Blackwell Server Edition, 4× B3140H 400GbE E-W + 1× B3220 N-S; SU = 4 nodes; Tables 6–7: 16n→2 leaf collapsed/N-S merged, 32n→2 E-W leaf + 2 N-S leaf; SN5610 leaf/spine; SN2201 per 2 SUs (min 2); scale 4–32 nodes / 256 GPUs; super-spine named for largest designs)",d:"last updated May 18, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/rtx-pro-ai-factory/latest/network-logical-architecture.html"},
     LINKX:{t:"NVIDIA LinkX: MMA4Z00-NS 800G Twin-port OSFP 2xSR4 product documentation (MFP7E10 straight / MFP7E20 1:2 splitter fiber; links to MMA4Z00-NS400 OSFP and MMA1Z00-NS400 QSFP112)",d:"accessed 2026-10-13",u:"https://docs.nvidia.com/networking/display/800GMMA4Z00NS"},
     LINKX_Q112:{t:"NVIDIA MMA1Z00-NS400 400Gb/s Single-port QSFP112 SR4 Product Specifications (IB+Ethernet, firmware auto-select; 1:2 splitter supported — split end activates two channels ⇒ 200G operation; for ConnectX-7 / BlueField-3 QSFP112 ports ↔ twin-port transceivers in 2×400G switches; MPO-12/APC, 50 m OM4)",d:"last updated May 17, 2024; accessed 2026-10-15",u:"https://networking-docs.nvidia.com/mms1z00ns400sr4"},
+    MFP7E10_ORD:{t:"NVIDIA MFP7E10-Nxxx Optical Multimode Fiber Cable Product Specifications — Ordering Information ('NVIDIA passive fiber cable, MMF, MPO12 APC to MPO12 APC', 3–50 m: -N003…-N050)",d:"last updated May 15, 2023; accessed 2026-10-20",u:"https://networking-docs.nvidia.com/mfp7e10nxxx/ordering-information"},
+    MFP7E20_ORD:{t:"NVIDIA MFP7E20-Nxxx Optical Multimode Splitter Fiber Cable Product Specifications — Ordering Information ('NVIDIA passive fiber cable, MMF, MPO12 APC to 2xMPO12 APC', 3–50 m: -N003…-N050)",d:"last updated May 15, 2023; accessed 2026-10-20",u:"https://networking-docs.nvidia.com/mfp7e20nxxx/ordering-information"},
     LINKX_OSFP400:{t:"NVIDIA MMA4Z00-NS400 400Gb/s Single-port OSFP SR4 Product Specifications (IB+Ethernet; 1:2 splitter supported — two channels active ⇒ 200Gb/s NDR200 operation; for ConnectX-7 OSFP adapters ↔ twin-port transceivers in 2×400G switches; MPO-12/APC, 50 m OM4)",d:"last updated Feb 19, 2025; accessed 2026-10-15",u:"https://networking-docs.nvidia.com/mma4z00ns400"},
     BF3:{t:"NVIDIA BlueField-3 Networking Platform User Guide — Ordering Part Numbers (B3140H 900-9D3D4-00EN-HA0; B3220 900-9D3B6-00CV-AA0 2×QSFP112 200GbE/NDR200; B3240 900-9D3B6-00CN-AB0 2×QSFP112 400GbE/NDR dual-slot FHHL)",d:"last updated Oct 13, 2026; accessed 2026-10-15",u:"https://networking-docs.nvidia.com/bf3dpu"},
     RA_HGXB300_LOG:{t:"NVIDIA HGX AI Factory (B300) Enterprise RA — Network Logical Architecture (Table 6 E-W: dual-plane, 8/16/32 leaf + 4/8/16 spine AGGREGATE at 32/64/128 nodes = 4 leaves/plane per 32-node block, 2 rails per leaf paired 1+5/2+6/3+7/4+8; 32/16/8 uplinks per leaf; SU = 4 nodes, 64×400G E-W uplinks/SU; Table 7 N-S: leaf 2/4/8 + spine 0/2/4, consolidated into the compute switches at ≤16 nodes; NOTE: page names SN5600 and carries an internal 128-port-vs-64-port inconsistency — catalog uses SN5610 64×800G, SN5600 EoL per SN5K)",d:"last updated May 18, 2026; accessed 2026-10-15",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory/latest/network-logical-architecture.html"},
@@ -707,8 +709,8 @@ const CATALOG = {
     osfp_400:{sku:"MMA4Z00-NS400",label:"400G Single-port OSFP SR4 MMF, MPO-12/APC, 50 m (OSFP NIC ports; IB+Eth; 200G/NDR200 documented via 1:2 splitter)",cites:["LINKX","LINKX_OSFP400"],validated:true}
   },
   fiber:{
-    straight:{sku:"MFP7E10",label:"MMF MPO-12/APC straight fiber, 8-fiber",cites:["LINKX"],validated:true},
-    splitter:{sku:"MFP7E20",label:"MMF MPO-12/APC 1:2 splitter fiber",cites:["LINKX"],validated:true},
+    straight:{sku:"MFP7E10",label:"MMF MPO-12/APC straight fiber, 8-fiber",cites:["LINKX","MFP7E10_ORD"],validated:true},
+    splitter:{sku:"MFP7E20",label:"MMF MPO-12/APC 1:2 splitter fiber",cites:["LINKX","MFP7E20_ORD"],validated:true},
     cat6a:{sku:"Cat6A (structured cabling)",label:"Cat6A RJ45 patch, OOB 1GBase-T",cites:["RA_LOG"],validated:true}
   },
   oems:["NVIDIA","Cisco","Arista","HPE"],
@@ -1809,6 +1811,24 @@ function buildBOM(input){
     status:"UNVALIDATED",needs:"customer core/aggregation switch optics compatibility matrix for the 100G uplink modules"}));
   if(oob.conflict) notes.push(oob.conflict);
   markSec("end");
+  /* Fiber lines live in the network they cable (E-W / N-S / Storage / OOB), with the short NVIDIA
+     ordering-table description (type, connectors, length — MFP7E10/MFP7E20 product specifications,
+     May 15 2023) and what the fiber is used for. */
+  {
+    const reachM={N010:10,N020:20,N030:30,N050:50}[reach]||null;
+    const spec=sku=>{
+      if(sku.startsWith(C.fiber.straight.sku+"-")) return `MMF MPO12 APC to MPO12 APC, ${reachM}m`;
+      if(sku.startsWith(C.fiber.splitter.sku+"-")) return `MMF MPO12 APC to 2xMPO12 APC, ${reachM}m`;
+      if(sku===C.optics.xdr_cable.sku) return "MMF MPO12 APC to MPO12 APC, 30m";
+      return null; };
+    for(const [k,nx] of [["ew","ns"],["ns","st"],["st","oob"],["oob","end"]])
+      for(let i=SEC[k].l;i<SEC[nx].l;i++){ const l=lines[i]; if(l.fabric!=="fiber") continue;
+        const sp=spec(l.sku||""); if(!sp) continue;
+        const u=(l.desc.split(" — ").slice(1).join(" — ")||"")
+          .replace(/\s*\((?:E-W|N-S|IB|XDR)(?:, [^)]*)?\)/g,"").replace(/^N-S /,"").trim();
+        l.fabric=k; l.role="Fiber"; l.use=u; l.desc=sp;
+      }
+  }
   /* strip excluded sections — reverse order keeps the recorded indices valid */
   const SPANS=[["oob","end"],["st","oob"],["ns","st"],["ew","ns"]];
   for(const [k,nx] of SPANS){ if(!inc[k]){
@@ -1853,7 +1873,7 @@ function buildBOM(input){
   /* ---- future state at the growth target ---- */
   const lineKey = l => ["Leaf","Spine","Super-spine"].includes(l.role)
     ? `${l.fabric}|${l.role}|${l.sku}`
-    : `${l.fabric}|${l.role}|${l.desc.replace(" (collapsed spine-leaf)","").replace("/super-spine","")}`;
+    : `${l.fabric}|${l.role}|${l.desc.replace(" (collapsed spine-leaf)","").replace("/super-spine","")}|${l.use||""}`;
   if(input.growth > input.nodes && !mixed){
     const f = buildBOM({...input, nodes: input.growth, growth: 0, ewcountmode:"auto", nscountmode:"auto"});
     if(ew.manual||ns.manual) notes.push(`Growth column: sized by the engine (auto counts) at ${input.growth.toLocaleString()} hosts — manual switch counts apply to the current ${input.nodes.toLocaleString()}-host build only.`);
@@ -1881,7 +1901,7 @@ const Exporter = {
     const all=[...bom.lines,...(hasF?bom.future.futureOnly.map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
     for(const l of all){
       rows.push([{ew:"East-West",ns:"North-South (converged)",st:"Storage",oob:"OOB Mgmt",fiber:"Fiber plant"}[l.fabric],
-        l.sku,l.desc,l.role,l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.futureOnly?"":(l.spares??""),l.uom,(l.status==="VERIFIED"?"DATASHEET-VERIFIED":l.status) + (l.eol?" (EOL part)":"") + (l.futureOnly?" (added at growth)":""),
+        l.sku,l.desc,l.role+(l.use?` — ${l.use}`:""),l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.futureOnly?"":(l.spares??""),l.uom,(l.status==="VERIFIED"?"DATASHEET-VERIFIED":l.status) + (l.eol?" (EOL part)":"") + (l.futureOnly?" (added at growth)":""),
         (l.cites||[]).map(c=>`${CATALOG.sources[c].t} — ${CATALOG.sources[c].d} — ${CATALOG.sources[c].u}`).join(" | ") + (l.needs?` | NEEDS: ${l.needs}`:"")]);
     }
     return rows.map(r=>r.map(esc).join(",")).join("\r\n");
@@ -1958,7 +1978,7 @@ const Exporter = {
     const head=["Fabric","SKU / OPN","Description","Role","Qty (now)",...(hasF?[`Qty @ ${bom.future.nodes} hosts`]:[]),"Qty math","UoM","Status","Citations / evidence needed"];
     const all=[...bom.lines,...(hasF?bom.future.futureOnly.map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
     const rows=[head];
-    for(const l of all) rows.push([fab[l.fabric],l.sku,l.desc,l.role,l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.uom,
+    for(const l of all) rows.push([fab[l.fabric],l.sku,l.desc,l.role+(l.use?` — ${l.use}`:""),l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.uom,
       (l.status==="VERIFIED"?"DATASHEET-VERIFIED":l.status)+(l.eol?" (EOL part)":"")+(l.futureOnly?" (added at growth)":""),
       (l.cites||[]).map(c=>`${CATALOG.sources[c].t} — ${CATALOG.sources[c].d} — ${CATALOG.sources[c].u}`).join(" | ")+(l.needs?` | NEEDS: ${l.needs}`:"")]);
     /* Total quantities by part number, function-agnostic — first tab */
@@ -2325,7 +2345,7 @@ const Exporter = {
       const fcell=future?`<td class="qty fut" data-l="@ growth">${l.fQty!=null?l.fQty.toLocaleString():"—"}</td>`:"";
       h+=`<tr${l.futureOnly?' class="futrow"':''}><td class="sku">${esc(l.sku)}</td>
         <td class="ds">${esc(l.desc)}<div class="math">Qty: ${esc(l.math)}</div>${l.needs?`<div class="math">Needs: ${esc(l.needs)}</div>`:""}<div class="cite">${esc((l.cites||[]).map(c=>`${CATALOG.sources[c].t.split("(")[0].trim()} — ${CATALOG.sources[c].d}`).join(" · "))}</div></td>
-        <td class="rl" data-l="Role">${esc(l.role)}</td><td class="qty" data-l="Qty">${l.futureOnly?"—":l.qty.toLocaleString()}</td>${fcell}<td class="qty" data-l="+Spares">${l.futureOnly?"—":(l.spares!=null?l.spares.toLocaleString():"—")}</td><td class="bd">${badge}${eol}${fut}</td></tr>`;
+        <td class="rl" data-l="Role">${esc(l.role)}${l.use?`<div class="math">Use: ${esc(l.use)}</div>`:""}</td><td class="qty" data-l="Qty">${l.futureOnly?"—":l.qty.toLocaleString()}</td>${fcell}<td class="qty" data-l="+Spares">${l.futureOnly?"—":(l.spares!=null?l.spares.toLocaleString():"—")}</td><td class="bd">${badge}${eol}${fut}</td></tr>`;
     }
     return h+"</tbody></table></div>";
   }
@@ -3622,7 +3642,7 @@ const Exporter = {
     const i=bom.input, pick=(o,ks)=>ks.map(k=>o&&o[k]!=null?`${k}=${o[k]}`:null).filter(Boolean).join(", ");
     const nic=id=>{const n=CATALOG.nics.find(x=>x.id===id); return n?`${n.label} [${n.sku}] (${n.ports}×${n.speedG}G ${n.ff})`:id;};
     const sw=s=>s?`${s.label} [${s.sku}] (${s.ports800||s.ports400||"?"} ports, ${s.ffSwitch||"?"} cages${s.proto==="ib"?", InfiniBand":""})`:"—";
-    const links=bom.lines.filter(l=>l.role==="Optic"||l.role==="Fiber trunk").map(l=>`- ${l.sku} ×${l.qty}: ${l.desc.split(" (alt:")[0]}`).join("\n");
+    const links=bom.lines.filter(l=>l.role==="Optic"||l.role==="Fiber").map(l=>`- ${l.sku} ×${l.qty}: ${l.desc.split(" (alt:")[0]}${l.use?` (${l.use})`:""}`).join("\n");
     return `You are a datacenter network hardware compatibility auditor. Independently verify END-TO-END connectivity of this AI GPU cluster design, reasoning from official OEM documentation you know (NVIDIA LinkX/ConnectX/BlueField/Spectrum/Quantum docs, Dell/Supermicro/Cisco server guides, Cisco/Arista/Juniper switch datasheets). Check EVERY link: NIC port speed & form factor ↔ transceiver model & form factor ↔ fiber type/connector ↔ switch cage form factor, speed and breakout mode. Also check protocol modes (Ethernet vs InfiniBand firmware), rail counts vs GPU count, and port-count feasibility.
 
 DESIGN
@@ -3905,7 +3925,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="64";
+  const APP_BUILD="65";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
