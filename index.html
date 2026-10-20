@@ -25,7 +25,6 @@
   --ok:#2e844a; --ok-bg:#ebf7ee; --warn:#a96404; --warn-bg:#fdf3e5; --err:#ba0517; --err-bg:#fdeeee;
   --ver:#056764; --ver-bg:#e3f5f3;
   --rail1:#24337f; --rail2:#009ade; --rail3:#00b398; --rail4:#a6ce39;
-  --pl-sw:#5b3fb5; --pl-sw-bg:#efeafc; --pl-host:#b0306a; --pl-host-bg:#fcebf3; --pl-link:#3f5372; --pl-link-bg:#e8edf5;
   --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.055);
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -38,7 +37,6 @@
     --border:#333c57; --border-soft:#272e45;
     --ok:#52c470; --ok-bg:#1b2d20; --warn:#f2a33c; --warn-bg:#33270f; --err:#ff7a85; --err-bg:#361418;
     --ver:#4fd1c5; --ver-bg:#0f2b28;
-    --pl-sw:#b9a4ff; --pl-sw-bg:#241b3d; --pl-host:#ff8cc0; --pl-host-bg:#35142a; --pl-link:#a9b8d6; --pl-link-bg:#1e2638;
     --shadow:0 2px 10px rgba(0,0,0,.5);
     color-scheme:dark;
   }
@@ -50,7 +48,6 @@
   --border:#333c57; --border-soft:#272e45;
   --ok:#52c470; --ok-bg:#1b2d20; --warn:#f2a33c; --warn-bg:#33270f; --err:#ff7a85; --err-bg:#361418;
   --ver:#4fd1c5; --ver-bg:#0f2b28;
-  --pl-sw:#b9a4ff; --pl-sw-bg:#241b3d; --pl-host:#ff8cc0; --pl-host-bg:#35142a; --pl-link:#a9b8d6; --pl-link-bg:#1e2638;
   --shadow:0 2px 10px rgba(0,0,0,.5);
   color-scheme:dark;
 }
@@ -160,7 +157,11 @@ html{scroll-behavior:smooth}
 .fabcard .mono{font-family:var(--mono);font-size:11px}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;border-radius:999px;padding:2px 9px;white-space:nowrap}
 .pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.ver{background:var(--ver-bg);color:var(--ver)}.pill.un{background:var(--warn-bg);color:var(--warn)}.pill.inf{background:var(--brand-tint);color:var(--brand)}
-.pill.pl-sw{background:var(--pl-sw-bg);color:var(--pl-sw)}.pill.pl-host{background:var(--pl-host-bg);color:var(--pl-host)}.pill.pl-link{background:var(--pl-link-bg);color:var(--pl-link)}
+/* BOM tags: transparent background, outlined; placement colored by network — E-W dark blue · N-S green · storage amber · OOB grey */
+.pill.tag{background:transparent;border:1px solid currentColor;padding:1px 8px}
+.pill.f-ew{color:var(--navy)}.pill.f-ns{color:var(--ok)}.pill.f-st{color:var(--warn)}.pill.f-oob{color:var(--muted)}
+table.bom .badge{background:transparent;border:1px solid currentColor}
+.pill.bi{background:transparent;color:var(--fg);border:1.5px solid var(--fg);padding:1px 8px}.pill.bi .ck{color:var(--ok);font-weight:800}
 .pill.pl{font-weight:600;margin-left:6px;vertical-align:1px}
 td.rl .pill.pl{margin-left:0;white-space:normal;text-align:left;line-height:1.3}
 /* Status icons for the quantity tables */
@@ -2483,7 +2484,7 @@ const Exporter = {
   }));
 
   const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  const FAB={ew:"Compute East-West",ns:"North-South",st:"Storage (dedicated — RA deviation)",oob:"Out-of-band management",fiber:"Fiber plant"};
+  const FAB={ew:"East-West",ns:"North-South",st:"Storage (dedicated — RA deviation)",oob:"Out-of-band management",fiber:"Fiber plant"};
 
   function bomTable(lines,future){
     if(!lines.length)return"";
@@ -3281,7 +3282,7 @@ const Exporter = {
 
   /* ---------- Full-detail composite SVG per fabric (Lucidchart export / SVG download) ---------- */
   const LUCID_COLORS={"--brand":"#0082ca","--brand-dark":"#006aa8","--brand-tint":"#e3f2fb","--bg":"#f4f6fa","--card":"#ffffff","--fg":"#1d2340","--muted":"#5f6680","--border":"#dde2ec","--border-soft":"#e9edf4","--ok":"#2e844a","--ok-bg":"#ebf7ee","--warn":"#a96404","--warn-bg":"#fdf3e5","--err":"#ba0517","--ver":"#056764","--ver-bg":"#e3f5f3","--rail1":"#24337f","--rail2":"#009ade","--rail3":"#00b398","--rail4":"#a6ce39","--navy":"#24337f","--navy-deep":"#1b2a6b","--lime":"#a6ce39","--azure":"#009ade"};
-  const FABNAME={ew:"Compute East-West",ns:"North-South",st:"Storage",oob:"OOB Management"};
+  const FABNAME={ew:"East-West",ns:"North-South",st:"Storage",oob:"OOB Management"};
   /* Export naming convention: "Client-AI Fabric-<Network->Description" */
   const FABSHORT={ew:"EW Network",ns:"NS Network",st:"Storage Network",oob:"OOB Network"};
   const exName=(i,fab)=>{
@@ -3822,14 +3823,14 @@ const Exporter = {
     }
     return {t:l.role||"—",c:"link"};
   }
-  const placePill=(l,b)=>{ const p=placeOf(l,b); return `<span class="pill pl pl-${p.c}" title="Where it goes">${esc(p.t)}</span>`; };
+  const placePill=(l,b)=>{ const p=placeOf(l,b); return `<span class="pill pl tag f-${l.fabric}" title="Where it goes">${esc(p.t)}</span>`; };
   function bomTableLite(ls,future){
     const fh=future?`<th class="qty">@ ${future.nodes.toLocaleString()}</th>`:"";
     let h=`<div class="tablewrap"><table class="lite"><thead><tr><th>Part number</th><th>Component</th><th class="qty">Qty</th>${fh}<th></th></tr></thead><tbody>`;
     for(const l of ls){
       const name=esc((l.desc||"").split(" — ")[0].split(" (alt:")[0]);
-      const tags=(l.builtIn?' <span class="pill inf" title="Chassis-integrated — ships with the GPU server">built-in</span>':"")
-        +(l.eol?' <span class="pill un">EoL</span>':"")+(l.futureOnly?' <span class="pill inf">at growth</span>':"");
+      const tags=(l.builtIn?' <span class="pill bi" title="Chassis-integrated — ships with the GPU server"><span class="ck">✓</span> built-in</span>':"")
+        +(l.eol?' <span class="pill tag" style="color:var(--err)">EoL</span>':"")+(l.futureOnly?' <span class="pill tag" style="color:var(--brand)">at growth</span>':"");
       h+=`<tr><td class="sku">${esc(l.sku)}</td><td class="nm">${name}${placePill(l,CUR_BOM)}${tags}</td>`
         +`<td class="qty q1">${l.futureOnly?"—":l.qty.toLocaleString()}</td>`
         +(future?`<td class="qty q2" data-l="@ ${future.nodes.toLocaleString()} hosts">${(l.fQty??l.qty).toLocaleString()}</td>`:"")
@@ -3923,7 +3924,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         </div>
         <div class="note"><b>Click any outlined block</b> to expand its internal connectivity below.</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0 2px">
-          <button class="btn neutral small" id="lucid-btn" type="button">Generate “Compute East-West” in Lucidchart</button>
+          <button class="btn neutral small" id="lucid-btn" type="button">Generate “East-West” in Lucidchart</button>
           <span class="note" id="lucid-out" style="margin:0"></span>
         </div>
         <div class="diag" id="topo-ov"></div>
@@ -4132,7 +4133,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="67";
+  const APP_BUILD="68";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
