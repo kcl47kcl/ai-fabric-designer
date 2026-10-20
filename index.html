@@ -3183,7 +3183,73 @@ const Exporter = {
   /* ---- Pods ↔ core groups: one column per core group (1, 2, ⋯, last). Top: the group's core switches
      (1, 2, ⋯, G); bottom: the spine that feeds this group in pods 1, 2, ⋯, P. EVERY drawn spine is wired to
      EVERY drawn switch it really connects to, each line labeled with its physical link count. ---- */
+  /* ---- Portrait-phone layouts: narrow viewBox, sections stacked top-to-bottom, captions word-wrapped ---- */
+  const Dwrap=(t,max)=>{ const out=[]; let line=""; for(const w of String(t).split(" ")){ if((line+" "+w).trim().length>max){ out.push(line.trim()); line=w; } else line+=" "+w; } if(line.trim()) out.push(line.trim()); return out; };
+  function DsvgN(W,H,aria,inner,caps){
+    let y=H+6, c=""; for(const cap of caps.filter(Boolean)) for(const ln of Dwrap(cap,Math.floor(W/5.2))){ y+=14; c+=`<text x="${W/2}" y="${y}" text-anchor="middle" fill="var(--muted)" font-size="10">${ln}</text>`; }
+    return `<svg viewBox="0 0 ${W} ${y+10}" width="100%" font-family="var(--font)" font-size="11" role="img" aria-label="${aria}">${inner}${c}</svg>`; }
+  const DsepN=(W,y,txt)=>`<text x="${W/2}" y="${y}" text-anchor="middle" fill="var(--muted)" font-weight="700" font-size="14" letter-spacing="3">⋮</text><text x="${W/2}" y="${y+14}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${txt}</text>`;
+  /* one core-group column (switches on top, feeding spines below) drawn at (cx, y0) — shared by both stacked views */
+  function DgroupCol(q,cx,y0,g,c,sws,feeds,W,opts={}){
+    const off=n=>n.length===3?[-100,-30,100]:n.length===2?[-55,55]:[0], bw=62, sx=off(sws).map(d=>cx+d), fx=off(feeds).map(d=>cx+d), fw=feeds.length===1?150:bw+12;
+    let s=`<rect x="${cx-140}" y="${y0}" width="280" height="92" rx="10" fill="none" stroke="${c}" stroke-width="1.5"/>`
+      +`<text x="${cx}" y="${y0+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">Core group ${g}</text><text x="${cx}" y="${y0+31}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${q.G} switches · ${q.coreDown}/${q.R} ports each</text>`;
+    sws.forEach((sw,k)=>{ s+=Dbox(sx[k]-bw/2,y0+42,bw,40,c)+`<text x="${sx[k]}" y="${y0+59}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">G${g}·SW${sw}</text><text x="${sx[k]}" y="${y0+73}" text-anchor="middle" fill="var(--muted)" font-size="9">switch ${sw}</text>`;
+      if(sws.length===3&&k===1&&sws[2]>3) s+=`<text x="${(sx[1]+sx[2])/2}" y="${y0+66}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`; });
+    const fy=y0+200, W2=[];
+    s+=`<rect x="${cx-140}" y="${fy-8}" width="280" height="64" rx="10" fill="none" stroke="var(--fg)" stroke-width="1.2" stroke-dasharray="5 4"/>`;
+    feeds.forEach((f,k)=>{ s+=Dbox(fx[k]-fw/2,fy,fw,48,"var(--muted)",f.dash)+(f.hi?`<rect x="${fx[k]-fw/2-4}" y="${fy-4}" width="${fw+8}" height="56" rx="9" fill="none" stroke="var(--brand)" stroke-width="2.4"/>`:"")
+        +`<text x="${fx[k]}" y="${fy+19}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">${f.l1}</text><text x="${fx[k]}" y="${fy+34}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${f.l2}</text>`;
+      if(feeds.length===3&&k===1&&f.gap) s+=`<text x="${(fx[1]+fx[2])/2}" y="${fy+28}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`;
+      sws.forEach((sw,j)=>{ const n=f.links(sw); if(!n) return; W2.push({x1:fx[k],y1:fy,x2:sx[j],y2:y0+82,c,lab:`×${n}`,tt:f.tt(sw,n)}); }); });
+    s+=`<text x="${cx}" y="${fy+70}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${opts.foot||""}</text>`;
+    return s+Dwires(W2);
+  }
+  function podCoreSVGN(b){
+    const ew=b.ew, q=F3(b), P=ew.pods, U=q.U, G=q.G, W=320, cx=160, B=300;
+    const groups=Dpick(U), pods=Dpick(P), sws=Dpick(G);
+    let s="", y=8;
+    groups.forEach((g,ci)=>{
+      if(ci===2&&groups[2]-groups[1]>1){ s+=DsepN(W,y+6,`groups ${groups[1]+1}–${groups[2]-1}: identical wiring`); y+=34; }
+      const feeds=pods.map((p,k)=>({l1:`Pod ${p}`,l2:`spine ${q.spineOf(p,g)}`,dash:q.partial&&p===P,gap:k===1&&pods.length===3&&pods[2]>3,
+        links:sw=>q.linksTo(p,sw),tt:(sw,n)=>`Pod ${p} · spine ${q.spineOf(p,g)} → core group ${g} · switch ${sw}: ${n} × ${q.unit}`}));
+      s+=DgroupCol(q,cx,y,g,railC4[ci%4],sws,feeds,W,{foot:`the spine feeding group ${g}, in every pod`}); y+=B;
+    });
+    const fl=q.full;
+    return DsvgN(W,y,"Pod spines wired to core-group switches (phone layout)",s,
+      [`pod p · spine g → every switch of core group g: ×${fl.perCore} ${q.unit} each = ${fl.up} uplinks per pod spine · never to another group`,
+       `${P} pods × ${U} groups${ew.planes===2?" · planes A and B identical":""} · core switch ${q.coreDown}/${q.R} ports${q.partial?` · last pod: ${q.last.touch<G?`1 link to ${q.last.touch} of ${G} switches per group`:`×${q.last.perCore} per switch`}`:""}`]);
+  }
+  function podSpineSVGN(b,si,pln){
+    const q=F3(b), ew=b.ew, fl=q.full, U=q.U, G=q.G, W=340, pre=pln?pln+"-":"";
+    const sp=fl.Sp<=3?Array.from({length:fl.Sp},(_,k)=>k+1):[...new Set([1,(si===1||si===fl.Sp)?2:si,fl.Sp])].sort((x,y)=>x-y);
+    const lv=Dpick(fl.L), sws=Dpick(G), xs=n=>n.length===3?[62,170,278]:n.length===2?[100,240]:[170];
+    let s="", Wr=[];
+    /* section 1 — inside the pod: leaves ↔ every pod spine */
+    const sY=34, lY=196, spX=xs(sp), lX=xs(lv);
+    s+=`<text x="12" y="16" fill="var(--fg)" font-weight="700" font-size="10" letter-spacing="1">ONE POD (any of ${ew.pods}${pln?`, plane ${pln}`:""}) — leaves → pod spines</text>`;
+    s+=`<rect x="6" y="${sY-12}" width="${W-12}" height="${lY+46-sY+22}" rx="12" fill="none" stroke="var(--fg)" stroke-width="1.2" stroke-dasharray="6 5"/>`;
+    sp.forEach((g,k)=>{ if(g===si) s+=`<rect x="${spX[k]-52}" y="${sY-4}" width="104" height="54" rx="9" fill="none" stroke="var(--brand)" stroke-width="2.4"/>`;
+      s+=Dbox(spX[k]-48,sY,96,46,"var(--muted)")+`<text x="${spX[k]}" y="${sY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">${pre}spine ${g}</text><text x="${spX[k]}" y="${sY+34}" text-anchor="middle" fill="var(--muted)" font-size="9">${fl.down}↓ / ${fl.up}↑</text>`;
+      if(k===1&&sp.length===3&&sp[2]-sp[1]>1) s+=`<text x="${(spX[1]+spX[2])/2}" y="${sY+28}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`; });
+    lv.forEach((l,k)=>{ s+=Dbox(lX[k]-48,lY,96,46,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">${pre}leaf ${l}</text><text x="${lX[k]}" y="${lY+34}" text-anchor="middle" fill="var(--muted)" font-size="9">${U} up</text>`;
+      if(k===1&&lv.length===3&&lv[2]>3) s+=`<text x="${(lX[1]+lX[2])/2}" y="${lY+28}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`;
+      sp.forEach((g,j)=>Wr.push({x1:lX[k],y1:lY,x2:spX[j],y2:sY+46,c:"var(--rail1)",lab:`×${fl.k}`,tt:`${pre}pod leaf ${l} → ${pre}pod spine ${g}: ${fl.k} × ${q.unit}`})); });
+    s+=Dwires(Wr);
+    /* section 2 — each shown spine → its core group */
+    let y=lY+90;
+    s+=`<text x="12" y="${y-8}" fill="var(--fg)" font-weight="700" font-size="10" letter-spacing="1">EACH POD SPINE → ITS CORE GROUP</text>`;
+    sp.forEach((g,ci)=>{
+      if(ci===2&&sp[2]-sp[1]>1){ s+=DsepN(W,y+6,`spines ${sp[1]+1}–${sp[2]-1}: same pattern, own group`); y+=34; }
+      const grp=(g-1)*(U/fl.Sp)+1;
+      s+=DgroupCol(q,W/2,y,grp,railC4[ci%4],sws,[{l1:`${pre}pod spine ${g}`,l2:`${fl.down}↓ / ${fl.up}↑ of ${q.R}`,hi:g===si,links:()=>fl.perCore,tt:(sw,n)=>`${pre}pod spine ${g} → core group ${grp} · switch ${sw}: ${n} × ${q.unit}`}],W,{foot:`${fl.up} uplinks = ${G} switches × ${fl.perCore}`});
+      y+=300; });
+    return DsvgN(W,y,`Pod spine ${si} connectivity (phone layout)`,s,
+      [`every leaf → EVERY pod spine ×${fl.k} · pod spine g → every switch of core group g ×${fl.perCore} (1:1) · never to another group`,
+       `${fl.L} leaves × ${fl.Sp} spines per pod · ${ew.pods} identical pods${pln?` · plane ${pln==="A"?"B":"A"} is an independent copy`:""}${q.partial?` · ${q.lastShort}`:""}`]);
+  }
   function podCoreSVG(b){
+    if(typeof TOPO!=="undefined"&&TOPO.narrow) return podCoreSVGN(b);
     const ew=b.ew, q=F3(b), f=q.f, P=ew.pods, U=q.U, G=q.G, unit=q.unit;
     const groups=Dpick(U), pods=Dpick(P), sws=Dpick(G);
     const colX=groups.length===3?[150,420,750]:groups.map((_,k)=>450+(k-(groups.length-1)/2)*290);
@@ -3217,6 +3283,7 @@ const Exporter = {
      spines (1, 2, ⋯, last — the clicked spine always shown & highlighted); top = the core group each of those
      spines feeds, with its switches. Every leaf↔spine and spine↔core-switch line labeled with its link count. ---- */
   function podSpineSVG(b,si,pln){
+    if(typeof TOPO!=="undefined"&&TOPO.narrow) return podSpineSVGN(b,Math.max(1,Math.min(si||1,F3(b).full.Sp)),b.ew.planes===2?(pln==="B"?"B":"A"):null);
     const q=F3(b), ew=b.ew, fl=q.full, G=q.G, U=q.U, unit=q.unit;
     si=Math.max(1,Math.min(si||1,fl.Sp));
     pln=ew.planes===2?(pln==="B"?"B":"A"):null;
@@ -3740,10 +3807,14 @@ const Exporter = {
     const svg=canvas.querySelector("svg"); if(!svg) return;
     const vb=(svg.getAttribute("viewBox")||"0 0 900 400").split(/\s+/).map(Number);
     const W=stage.clientWidth, H=stage.clientHeight, pad=8;
-    const base=Math.min((W-2*pad)/vb[2],(H-2*pad)/vb[3]);
+    /* tall (stacked phone) pictures fit the WIDTH and scroll vertically; everything else fits whole */
+    const tall=vb[3]/vb[2] > 1.15*(H-2*pad)/(W-2*pad);
+    const base=tall?(W-2*pad)/vb[2]:Math.min((W-2*pad)/vb[2],(H-2*pad)/vb[3]);
     const cw=vb[2]*base, ch=vb[3]*base;
     svg.setAttribute("width",cw); svg.setAttribute("height",ch); svg.style.width=cw+"px"; svg.style.height=ch+"px";
-    let k=1, x=(W-cw)/2, y=(H-ch)/2;
+    const y0=()=>tall?pad:(H-ch)/2;
+    let k=1, x=(W-cw)/2, y=y0();
+    if(tall){ const h=stage.parentElement&&stage.parentElement.querySelector(".zv-hint"); if(h) h.textContent="Drag up / down to scroll · pinch or + / − to zoom · Fit returns to the top"; }
     const clamp=()=>{ k=Math.min(6,Math.max(1,k));
       const sw=cw*k, sh=ch*k;
       x = sw<=W ? (W-sw)/2 : Math.min(pad,Math.max(W-sw-pad,x));
@@ -3761,7 +3832,7 @@ const Exporter = {
         const [a,b]=[...P.values()], dist=Math.hypot(a.x-b.x,a.y-b.y), mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};
         if(last){ zoomAt(k*dist/last.dist,mid.x,mid.y); x+=mid.x-last.mid.x; y+=mid.y-last.mid.y; apply(); }
         last={dist,mid}; moved=true;
-      } else if(P.size===1 && k>1){
+      } else if(P.size===1 && (k>1||ch>H)){
         const dx=cur.x-prev.x, dy=cur.y-prev.y; if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
         x+=dx; y+=dy; apply();
       }
@@ -3773,7 +3844,7 @@ const Exporter = {
     stage.addEventListener("wheel",e=>{ e.preventDefault(); const p=rel(e); zoomAt(k*(e.deltaY<0?1.15:1/1.15),p.x,p.y); },{passive:false});
     $("zv-in").onclick=()=>zoomAt(k*1.5,W/2,H/2);
     $("zv-out").onclick=()=>zoomAt(k/1.5,W/2,H/2);
-    $("zv-fit").onclick=()=>{ k=1; x=(W-cw)/2; y=(H-ch)/2; apply(); };
+    $("zv-fit").onclick=()=>{ k=1; x=(W-cw)/2; y=y0(); apply(); };
     stage.__zv={get k(){return k;},cw,ch,W,H};
   }
   function renderTopo(){
@@ -3785,15 +3856,17 @@ const Exporter = {
       const d=topoDetail(TOPO.detail), di=TOPO.idx||1, dpl=TOPO.plane;
       const dt=d?(typeof d.t==="function"?d.t(di,dpl):d.t):"";
       const phone=window.matchMedia("(max-width:980px)").matches;
+      TOPO.narrow = phone && window.innerHeight>window.innerWidth;   /* portrait phone ⇒ stacked layouts where provided */
       if(d&&phone){
         det.innerHTML=`<div class="zv" role="dialog" aria-modal="true" aria-label="${dt}"><div class="zv-head"><div class="zv-title">⤢ ${dt}</div><button class="btn neutral small" id="dclose" type="button">Close</button></div>`
           +`<div class="zv-stage" id="zv-stage"><div class="zv-canvas" id="zv-canvas">${d.f(TOPO.bom,di,dpl)}</div></div>`
           +`<div class="zv-hint">Pinch or use + / − to zoom · drag to move · double-tap to zoom in</div>`
           +`<div class="zv-tools"><button type="button" id="zv-out" aria-label="Zoom out">−</button><button type="button" id="zv-fit" aria-label="Fit to screen" style="font-size:13px">Fit</button><button type="button" id="zv-in" aria-label="Zoom in">+</button></div></div>`;
+        TOPO.narrow=false;   /* stacked layout only for this phone viewer — exports/overview stay full width */
         document.body.classList.add("zv-open");
         zoomViewer($("zv-stage"),$("zv-canvas"));
       } else {
-        document.body.classList.remove("zv-open");
+        document.body.classList.remove("zv-open"); TOPO.narrow=false;
         det.innerHTML=d?`<div class="detailpane"><div class="detailhead"><span>⤢ ${dt}</span><span class="spacer"></span><button class="btn neutral small" id="dclose" type="button">Close</button></div><div class="diag">${d.f(TOPO.bom,di,dpl)}</div></div>`:"";
       }
       const c=$("dclose"); if(c) c.onclick=()=>{document.body.classList.remove("zv-open");TOPO.detail=null;TOPO.idx=null;TOPO.plane=null;renderTopo();};
@@ -4212,7 +4285,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="71";
+  const APP_BUILD="72";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
