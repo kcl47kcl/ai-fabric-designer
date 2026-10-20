@@ -600,7 +600,7 @@ body.zv-open{overflow:hidden}
    CHANGELOG.md). Every entry carries citations and as-of dates.
    ===================================================================== */
 const CATALOG = {
-  catalogVersion:"0.10.1", asOf:"2026-10-20",
+  catalogVersion:"0.11.0", asOf:"2026-10-20",
   sources:{
     RA_HGX:{t:"NVIDIA Enterprise RA: HGX AI Factory (HGX H100, H200, B200), 2-8-9-400 w/ Spectrum-X",d:"last updated Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/"},
     RA_NETHW:{t:"HGX AI Factory RA — Networking Hardware",d:"Aug 31, 2026",u:"https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/networking-hardware.html"},
@@ -818,6 +818,43 @@ const Engine = (() => {
       spines/plane ≤ 32 (leaf up-radix spread). Beyond that: 3-tier folded Clos — pods of
       32 leaves + 32 spines per plane (pod spines split 32↓/32↑), core (super-spine) layer
       organized in 32 core groups of ceil(pods/2) switches, every tier port-exact. */
+  /** 3-tier folded Clos, radix-exact, shared by Ethernet (64×800G cages), NDR IB (QM9700 64×400G) and
+      XDR IB (Q3400 144×800G). U = leaf up-ports (= R/2), R = switch radix, lpb = leaves per rail block / SU.
+      • Pod = ⌊U/lpb⌋ blocks (≤ U leaves). Every leaf sends its U up-ports evenly to the pod's Sp spines
+        (k = U/Sp links to each — Sp an even divisor of U ≥ pod leaves, so pod-spine down = Lp·k ≤ U).
+      • Core = U groups (one per full-pod spine slot) × G switches. Pod spine j feeds groups j·U/Sp…; each pod
+        sends ⌈Lp/G⌉ links to EVERY core switch of every group (equal integers, ≥1:1).
+      • G = smallest even divisor of U with core down-ports Σ⌈Lp/G⌉ ≤ R; pod spines keep up+down ≤ R.
+      • If no G fits, the fabric is NOT buildable in 3 tiers — returned as infeasible (never drawn). */
+  function fold3({U,R,lpb,blocks,planes,nodesPerBlock}){
+    const divs=[]; for(let d=2;d<=U;d++) if(U%d===0&&d%2===0) divs.push(d);
+    const bpp=Math.max(1,Math.floor(U/lpb)), podLeavesMax=bpp*lpb;
+    const pods=ceil(blocks/bpp), podL=[];
+    for(let p=0;p<pods;p++) podL.push(Math.min(bpp,blocks-p*bpp)*lpb);
+    for(const G of divs){
+      const coreDown=podL.reduce((a,L)=>a+ceil(L/G),0);
+      if(coreDown>R) continue;
+      const podInfo=[]; let ok=true;
+      for(const L of podL){
+        /* per core group this pod carries L links: L ≥ G ⇒ ⌈L/G⌉ to every core of the group;
+           L < G ⇒ 1 link to each of L cores (a partial pod touches only the cores it can fill, 1:1) */
+        const pc=ceil(L/G), touch=Math.min(L,G), perGroup=L>=G?G*pc:L; let pick=null;
+        for(const Sp of divs){ if(Sp<L) continue; const k=U/Sp, down=L*k, up=(U/Sp)*perGroup;
+          if(down<=U&&up+down<=R&&up>=down){ pick={L,Sp,k,down,up,perCore:pc,touch,perGroup}; break; } }
+        if(!pick){ ok=false; break; } podInfo.push(pick);
+      }
+      if(!ok) continue;
+      const spinePP=podInfo.reduce((a,x)=>a+x.Sp,0), linksLS=podInfo.reduce((a,x)=>a+x.L*U,0), linksSC=podInfo.reduce((a,x)=>a+U*x.perGroup,0);
+      return {ok:true,U,R,G,pods,podInfo,bpp,podLeavesMax,podNodes:bpp*nodesPerBlock,coreDown,
+        spine:spinePP*planes,sspine:U*G*planes,linksLS:linksLS*planes,linksSC:linksSC*planes,coreGroups:U,coreGroupSize:G,coreStripe:U/G};
+    }
+    const maxPods=R; // G=U ⇒ one link per pod per core ⇒ ≤ R pods
+    return {ok:false,pods,U,R,podLeavesMax,podNodes:bpp*nodesPerBlock,
+      why:`${pods} pods per plane exceed the 3-tier maximum of ${maxPods} pods (${(maxPods*bpp*nodesPerBlock).toLocaleString()} hosts per plane) on ${R}-port switches — a 4th tier or a higher-radix platform is required`};
+  }
+  const fold3Basis=(f,unit)=>{ const full=f.podInfo[0], last=f.podInfo[f.podInfo.length-1];
+    return `3-tier folded Clos: ${f.pods} pod(s)/plane (≤${f.podLeavesMax} leaves = ${f.podNodes.toLocaleString()} hosts per pod); pod: each leaf ${f.U} up ${unit}s → ${full.Sp} pod spines × ${full.k}${last!==full&&last.Sp!==full.Sp?` (last pod: ${last.L} leaves → ${last.Sp} spines × ${last.k})`:""}; core = ${f.U} groups × ${f.G} switches — every full pod sends ${full.perCore} link(s) to each core switch${last!==full&&(last.perGroup!==full.perGroup)?` (last pod: ${last.touch<f.G?`1 link to ${last.touch} of the ${f.G} switches per group`:`${last.perCore} per switch`})`:""}; core ${f.coreDown}/${f.R} down-ports, pod spine ≤${Math.max(...f.podInfo.map(x=>x.down+x.up))}/${f.R} ports — all within radix`; };
+
   function sizeEWCore(nodes, linksPerNode, planes, railSpeed){
     const legsPerCage = Math.max(1, Math.floor(800/railSpeed));   // 2 @400G, 4 @200G (1:2 splitter per 400G leg)
     const railsPerLeaf = 2;
@@ -849,33 +886,25 @@ const Engine = (() => {
       /* SG size must DIVIDE the 16 up-cages a leaf gives each rail (even striping, integer links per
          spine) and satisfy blocks×16/S ≤ 64 down-cages ⇒ smallest power of two ≥ blocks/4 */
       const sgSize=[2,4,8,16].find(S=>S>=blocksPerPlane/4)||16;
-      var sgK=16/sgSize, sgLast=Math.max(1,ceil(upLast/2/sgSize));
+      var sgSizeV=sgSize, sgK=16/sgSize, sgLast=Math.max(1,ceil(upLast/2/sgSize));
       spine = railsPerPlane*sgSize*planes;
       upCagesStriped = (leavesPerBlock*(blocksPerPlane-1)*32 + leavesPerBlock*2*sgSize*sgLast)*planes;
       spineBasis = `2-tier, rail-aligned spine groups: ${railsPerPlane} SGs/plane × ${sgSize} spines (even: each leaf gives ${sgK} up-cage(s) per rail to every spine of that rail's SG${sgLast!==sgK?`; last-block leaves ${sgLast}`:""}; SG spine: ${blocksPerPlane} rail-leaves × ${sgK} = ${blocksPerPlane*sgK}/64 down-cages ✓) — DGX SuperPOD B300 Table 3 pattern`;
     } else {
       tier=3;
-      podBlocks=Math.max(1,Math.floor(32/leavesPerBlock));         // pod = 32 leaves/plane
-      podNodes=podBlocks*nodesPerBlock;                            // 256 nodes @400G, 8 rails
-      pods=ceil(blocksPerPlane/podBlocks);
-      spine=leavesPerPlane*planes;                                 // pod spines split 32↓/32↑ ⇒ 1 spine per pod leaf
-      coreGroups=32;
-      /* group size MUST be a power-of-two divisor of 32 so every pod spine stripes EVENLY
-         (32/S links on every switch of its group) — otherwise the pairwise min-cut between two
-         pods' same-index spines drops below 32 and strict 1:1 is lost. S ≥ pods/2 for 64-port down. */
-      coreGroupSize=[2,4,8,16,32].find(S=>S>=pods/2)||32;
-      var coreStripe=32/coreGroupSize;                             // links per pod spine per core switch (integer)
-      var overCore = pods*coreStripe>64;                           // >64 pods: not buildable 3-tier on 64-port radix
-      sspine=coreGroups*coreGroupSize*planes;
-      linksSC=spine*32;                                            // spine→core 800G links (32 up-cages per spine)
-      spineBasis=`3-tier folded Clos: ${pods} pod(s)/plane of ${podNodes} nodes (32 leaf + 32 spine per pod/plane; pod spine 32↓/32↑), core = ${coreGroups} groups × ${coreGroupSize}/plane — even striping ${coreStripe}/switch, ${pods*coreStripe}/64 down-ports used (headroom to ${2*coreGroupSize} pods)`;
+      var f3=fold3({U:32,R:64,lpb:leavesPerBlock,blocks:blocksPerPlane,planes,nodesPerBlock});
+      if(f3.ok){ pods=f3.pods; podNodes=f3.podNodes; spine=f3.spine; sspine=f3.sspine; coreGroups=f3.coreGroups; coreGroupSize=f3.coreGroupSize;
+        var coreStripe=f3.coreStripe, overCore=false; linksSC=f3.linksSC; upCagesStriped=f3.linksLS; spineBasis=fold3Basis(f3,"800G cage"); }
+      else { pods=f3.pods; podNodes=f3.podNodes; spine=0; sspine=0; var overCore=true, coreStripe=0; spineBasis=f3.why; }
     }
     const nIn = Math.min(nodes-(blocksPerPlane-1)*nodesPerBlock, nodesPerBlock);
     const downG = nIn*railsPerLeaf*railSpeed, upG = stripeInfo ? stripeInfo.groups[stripeInfo.groups.length-1].k*stripeInfo.S*800 : downG;
     const cagesUsed = ceil(nIn*railsPerLeaf/legsPerCage)+ceil(nIn*railsPerLeaf*railSpeed/800);
-    const upL = tier===2 ? upCagesStriped : upCages;
+    const upL = (tier===2||(typeof f3!=="undefined"&&f3.ok)) ? upCagesStriped : upCages;
     const linksAll = upL + linksSC;
     return {proto:"eth",planes,railSpeed,legsPerCage,railsPerPlane,leavesPerBlock,nodesPerBlock,stripe:stripeInfo,nLast,
+      sg:regime==="sg"?{size:sgSizeV,k:sgK,kLast:sgLast}:null,
+      fold:(typeof f3!=="undefined")?f3:null, infeasible:(typeof f3!=="undefined"&&!f3.ok)?f3.why:null,
       blocks:blocksPerPlane,leaf,spine,sspine,tier,regime,tier3:tier===3,pods,podNodes,coreGroups,coreGroupSize,
       coreStripe:(typeof coreStripe!=="undefined"?coreStripe:0), overCore:(typeof overCore!=="undefined"?overCore:false),
       hostLinks,downCages,upCages:upL,links800:upL,linksSC,spineBasis,
@@ -913,15 +942,11 @@ const Engine = (() => {
       spineBasis=`flat 2-tier on QM9700, even striping: ${ibStripe.S} spines/plane — ${ibStripe.groups.map(x=>`${x.leaves} leaf × ${x.k*ibStripe.S} up (${x.k} to each spine)`).join(" + ")}; each spine ${ibStripe.spineDown}/64 down-ports`; beyond=true;
     } else {
       tier=3; beyond=true;
-      const podSUs=Math.max(1,Math.floor(32/leavesPerBlock)); podNodes=podSUs*nodesPerBlock; // 4 SUs = 128 nodes/pod
-      pods=ceil(blocks/podSUs);
-      spine=leavesPerPlane*planes;                                 // pod spine 32↓/32↑ (400G ports)
-      coreGroups=32;
-      coreGroupSize=[2,4,8,16,32].find(S=>S>=pods/2)||32;          // power-of-two divisor of 32 → even striping
-      var coreStripeIB=32/coreGroupSize, overCoreIB=pods*coreStripeIB>64;
-      sspine=coreGroups*coreGroupSize*planes;
-      linksSC=spine*32;                                            // 400G spine→core links
-      spineBasis=`3-tier folded Clos on QM9700: ${pods} pod(s) of ${podNodes} nodes (32 leaf + 32 spine per pod; pod spine 32↓/32↑ 400G ports), core = 32 groups × ${coreGroupSize} — even striping ${coreStripeIB}/switch, ${pods*coreStripeIB}/64 down-ports used`;
+      var f3i=fold3({U:32,R:64,lpb:leavesPerBlock,blocks,planes,nodesPerBlock});
+      pods=f3i.pods; podNodes=f3i.podNodes;
+      if(f3i.ok){ spine=f3i.spine; sspine=f3i.sspine; coreGroups=f3i.coreGroups; coreGroupSize=f3i.coreGroupSize; linksSC=f3i.linksSC; ibUp=f3i.linksLS;
+        var coreStripeIB=f3i.coreStripe, overCoreIB=false; spineBasis=fold3Basis(f3i,"400G NDR port")+" (QM9700)"; }
+      else { spine=0; sspine=0; var overCoreIB=true, coreStripeIB=0; spineBasis=f3i.why; }
     }
     const nIn=Math.min(nodes-(blocks-1)*nodesPerBlock,nodesPerBlock);
     const downG=nIn*1*400, upG=downG;
@@ -931,6 +956,7 @@ const Engine = (() => {
       blocks,leaf,spine,sspine,tier,tier3:tier===3,pods,podNodes,coreGroups,coreGroupSize,linksSC,
       coreStripe:(typeof coreStripeIB!=="undefined"?coreStripeIB:0), overCore:(typeof overCoreIB!=="undefined"?overCoreIB:false),
       hostLinks, links400:upIB, linksSS:linksAll, ssLinkG:400, spineBasis, beyond, stripe:ibStripe,
+      fold:(typeof f3i!=="undefined")?f3i:null, infeasible:(typeof f3i!=="undefined"&&!f3i.ok)?f3i.why:null,
       xH:hostLinks, xLS:ceil(hostLinks/2), xSS:ceil(linksAll/2)*2, cH:hostLinks, cSS:linksAll,
       splitters:0,
       proof:{nodesInBlock:nIn,downG,upG,cagesUsed:nIn+ceil(nIn/2)+ceil(nIn/2),cagesAvail:64,ratio:"1:1",
@@ -947,13 +973,19 @@ const Engine = (() => {
     let spine, basis, beyond=false, over=false;
     if(row){ spine=row.spine; basis=`DGX SuperPOD B300 Quantum-X800 RA published row: ${sus} SU → ${row.leaf} leaf + ${row.spine} spine (each leaf 72 down / 72 up, ${g.leafUp/row.spine} uplinks to each spine)`; }
     else if(st){ spine=st.S; beyond=true; basis=`between published rows: ${sus} SUs → ${leaf} leaf × 72 up, ${st.S} spines (even divisor of 72 — same rule reproduces every published row), ${st.groups[0].k} uplinks per leaf per spine, ${st.spineDown}/144 spine ports`; }
-    else { over=true; beyond=true; spine=2*ceil(leaf*g.leafUp/g.spineDown/2); basis=`${sus} SUs exceeds the 2-tier Q3400 radix (≤18 SUs at 144-port spines) — a 3rd tier is required and no published table covers it`; }
+    let f3x=null, tier=2, sspine=0, linksSC=0;
+    if(!row&&!st){ over=true; beyond=true; tier=3;
+      f3x=fold3({U:g.leafUp,R:g.spineDown,lpb:g.leavesPerSU,blocks:sus,planes:1,nodesPerBlock:g.suNodes});
+      if(f3x.ok){ spine=f3x.spine; sspine=f3x.sspine; linksSC=f3x.linksSC; basis=fold3Basis(f3x,"800G XDR port")+` — beyond the published Quantum-X800 tables (≤18 SU, 2-tier)`; }
+      else { spine=0; basis=f3x.why; } }
     const hostLinks=nodes*rails, links=leaf*g.leafUp;
+    const stripeX = tier===2 ? (row ? {S:row.spine,groups:[{leaves:leaf,up:g.leafUp,k:g.leafUp/row.spine}],spineDown:leaf*g.leafUp/row.spine,links,kMin:g.leafUp/row.spine,kMax:g.leafUp/row.spine} : st) : null;
     const nIn=nodes-(sus-1)*g.suNodes;
     return {proto:"ib",xdr:true,planes:1,railSpeed:800,legsPerCage:2,railsPerPlane:rails,leavesPerBlock:g.leavesPerSU,nodesPerBlock:g.suNodes,
-      blocks:sus,leaf,spine,sspine:0,tier:2,tier3:false,pods:0,podNodes:0,coreGroups:0,coreGroupSize:0,linksSC:0,
-      hostLinks,links800:links,links400:null,linksSS:links,ssLinkG:800,spineBasis:basis,beyond,over,published:!!row,
-      xH:hostLinks,xLS:ceil(hostLinks/2),xSS:links,cH:hostLinks,cSS:links,splitters:0,stripe:null,
+      blocks:sus,leaf,spine,sspine,tier,tier3:tier===3,pods:f3x?f3x.pods:0,podNodes:f3x?f3x.podNodes:0,coreGroups:f3x&&f3x.ok?f3x.coreGroups:0,coreGroupSize:f3x&&f3x.ok?f3x.coreGroupSize:0,
+      coreStripe:f3x&&f3x.ok?f3x.coreStripe:0,overCore:false,linksSC,fold:f3x,infeasible:f3x&&!f3x.ok?f3x.why:null,
+      hostLinks,links800:links,links400:null,linksSS:links+linksSC,ssLinkG:800,spineBasis:basis,beyond,over,published:!!row,
+      xH:hostLinks,xLS:ceil(hostLinks/2),xSS:links+linksSC,cH:hostLinks,cSS:links+linksSC,splitters:0,stripe:stripeX,
       proof:{nodesInBlock:nIn,downG:nIn*800,upG:g.leafUp*800,cagesUsed:ceil(nIn/2)+g.leafUp/2,cagesAvail:72,ratio:"1:1",
         note:"Q3400-RA: 144×XDR 800G — leaf 72 down / 72 up; fabric built for the full 72-node SU (RA)"}};
   }
@@ -980,7 +1012,30 @@ const Engine = (() => {
 
   /** Converged N-S per RA Table 8: exact at published rows; interpolated between; linear per-128-node group beyond.
       RTX PRO profile uses its own RA Table 7 (16n merged into E-W; 32n = 2 leaf). */
+  /** Leaf → spine fabric for a given leaf count on 64×800G switches (leaf 32↓/32↑):
+      ≤64 leaves ⇒ flat 2-tier, even striping; >64 ⇒ radix-exact 3-tier fold (pods/core groups).
+      Used wherever a fabric grows past its published RA rows (N-S, RTX PRO, dedicated storage). */
+  function closLS(L,lpb=2){
+    if(L<=2) return {tier:1,spine:0,sspine:0,linksLS:L===2?0:0,linksSC:0,stripe:null,fold:null,basis:L===2?"leaf pair":"single leaf"};
+    if(L<=64){ const st=evenStripe([{leaves:L,up:32}],64,32);
+      return {tier:2,spine:st.S,sspine:0,linksLS:st.links,linksSC:0,stripe:st,fold:null,
+        basis:`flat 2-tier: ${L} leaves × 32 up → ${st.S} spines (${st.groups[0].k} to each, even), each spine ${st.spineDown}/64 down`}; }
+    const f=fold3({U:32,R:64,lpb,blocks:Math.ceil(L/lpb),planes:1,nodesPerBlock:0});
+    if(!f.ok) return {tier:3,infeasible:f.why,spine:0,sspine:0,linksLS:0,linksSC:0,fold:f,basis:f.why};
+    return {tier:3,spine:f.spine,sspine:f.sspine,linksLS:f.linksLS,linksSC:f.linksSC,stripe:null,fold:f,
+      basis:`3-tier: ${f.pods} pod(s) of ≤${f.podLeavesMax} leaves; pod spines ${f.spine}, core ${f.coreGroups} groups × ${f.coreGroupSize}; core ${f.coreDown}/64 ports`}; }
+
+  /* N-S: published RA rows verbatim; BEYOND the rows the island-scaling of the rows is replaced by ONE
+     connected fabric: leaves from the real port allocations (32 down / 32 up each, pairs), spines by closLS. */
   function sizeNS(cat, N, gpu, forceDedicated){
+    const r=sizeNSRows(cat,N,gpu,forceDedicated);
+    if(!r.beyond||r.merged) return r;
+    const alloc=r.pCPU+(r.pStor||0)+(r.pMgmt||0)+(r.pCust||0)+(r.pSupp||0);
+    const L=Math.max(2,2*ceil(alloc/32/2)), c=closLS(L,2), links=c.linksLS+c.linksSC;
+    return {...r, leaf:L, spine:c.spine, sspine:c.sspine, nsTier:c.tier, nsFold:c.fold, nsStripe:c.stripe, infeasible:c.infeasible||null,
+      pISL:2*links, xSS:2*links, cSS:links, linksLS:c.linksLS, linksSC:c.linksSC,
+      basis:`${r.basis.split(" — ")[0]} — beyond the published rows, sized as ONE connected fabric: ${alloc.toLocaleString()} allocated 800G ports ÷ 32 down per leaf = ${L} leaves (32↓/32↑, pairs); ${c.basis}`}; }
+  function sizeNSRows(cat, N, gpu, forceDedicated){
     /* ISL port-ends/optics come in pairs (2 ends per link) — every DERIVED count is forced even;
        published RA rows pass through verbatim (they are already even). */
     const ev=v=>v>0?2*ceil(v/2):0;
@@ -1127,18 +1182,21 @@ const Engine = (() => {
     const sg1024=sizeEWCore(1024,16,2,400); if(sg1024.regime!=="sg"||sg1024.spine!==128||sg1024.leaf!==256) fails.push(`1024n dual: ${sg1024.regime}/${sg1024.leaf}/${sg1024.spine} ≠ sg/256/128 (SPOD Table 3)`);
     const t3=sizeEWCore(12500,8,1,400);
     if(t3.tier!==3) fails.push("12500n not 3-tier");
-    if(t3.spine!==t3.leaf) fails.push(`12500n pod spine ${t3.spine} ≠ leaf ${t3.leaf} (32↓/32↑ rule)`);
-    const Sx=[2,4,8,16,32].find(S=>S>=t3.pods/2)||32;
-    if(t3.coreGroupSize!==Sx||32%t3.coreGroupSize!==0) fails.push(`12500n group size ${t3.coreGroupSize} ≠ power-of-two rule ${Sx}`);
-    if(t3.pods*t3.coreStripe>64) fails.push("12500n core down-ports exceeded");
-    if(t3.sspine!==32*Sx) fails.push(`12500n core ${t3.sspine} ≠ 32×${Sx}`);
-    if(t3.spine*32!==t3.linksSC) fails.push("12500n spine↔core links ≠ spine×32");
-    if(t3.sspine*64 < t3.linksSC) fails.push("12500n core down-radix exceeded");
-    // the uneven-striping trap (48 pods must get 32-switch groups, not 24) + IB 3-tier bounds
-    const e48=sizeEWCore(12288,8,1,400);
-    if(e48.coreGroupSize!==32||e48.coreStripe!==1||e48.overCore) fails.push(`12288n: group ${e48.coreGroupSize}/stripe ${e48.coreStripe}/over ${e48.overCore} ≠ 32/1/false`);
-    const i64=sizeEWIB(cat,8192,8,1); if(i64.overCore||i64.coreGroupSize!==32) fails.push(`IB 8192n: over ${i64.overCore} size ${i64.coreGroupSize}`);
-    const iBig=sizeEWIB(cat,12500,8,1); if(!iBig.overCore) fails.push("IB 12500n should be overCore");
+    /* 3-tier goldens (radix-exact fold3): every pod's leaves stripe evenly to its spines, every core
+       switch's down-ports ≤ radix, pod spines up+down ≤ radix, 1:1 at every tier */
+    const f3ok=(e,tag,R)=>{ const f=e.fold; if(!f||!f.ok){ fails.push(`${tag}: no feasible 3-tier fold`); return; }
+      if(f.coreDown>R) fails.push(`${tag}: core down ${f.coreDown} > ${R}`);
+      for(const x of f.podInfo){ if(x.L*x.k!==x.down||x.down>f.U||x.down+x.up>R||x.up<x.down||f.U%x.Sp) fails.push(`${tag}: pod ${x.L} leaves/${x.Sp} spines breaks radix or striping`); }
+      if(e.spine!==f.podInfo.reduce((a,x)=>a+x.Sp,0)*(e.planes||1)) fails.push(`${tag}: spine count ≠ Σ pod spines`); };
+    f3ok(t3,"Eth 12500n",64);
+    const e48=sizeEWCore(12288,8,1,400); f3ok(e48,"Eth 12288n",64);
+    if(e48.coreGroupSize!==32||e48.coreStripe!==1||e48.sspine!==1024) fails.push(`12288n: group ${e48.coreGroupSize}/stripe ${e48.coreStripe}/core ${e48.sspine} ≠ 32/1/1024`);
+    const i64=sizeEWIB(cat,8192,8,1); f3ok(i64,"IB 8192n",64); if(i64.coreGroupSize!==32) fails.push(`IB 8192n: group ${i64.coreGroupSize} ≠ 32`);
+    const iBig=sizeEWIB(cat,8193,8,1); if(!iBig.infeasible) fails.push("IB 8193n must be infeasible on QM9700 (65 pods > 64-port core)");
+    const xBig=sizeEWXDR(cat,12288); f3ok(xBig,"XDR 12288n",144);
+    if(xBig.leaf!==1368||xBig.spine!==1368||xBig.sspine!==864) fails.push(`XDR 12288n: ${xBig.leaf}/${xBig.spine}/${xBig.sspine} ≠ 1368/1368/864`);
+    const x19=sizeEWXDR(cat,1368); f3ok(x19,"XDR 19 SU",144);
+    if(x19.tier!==3) fails.push("XDR 19 SU must be 3-tier (2-tier max 18 SU)");
     /* HGX B300 RA Table 6 goldens (dual-plane, 16×400G ports/host): aggregate leaf/spine must match */
     for(const r of cat.golden.b300.ew){
       const e=sizeEWCore(r.n,16,2,400);
@@ -1159,7 +1217,74 @@ const Engine = (() => {
     return fails;
   }
 
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe};
+  /** PHYSICAL PORT AUDIT — independent re-count of every switch's ports from the sized design.
+      Returns a list of violations (empty = every link lands on a real port, no switch exceeds its radix,
+      every leaf stripes equal integer links to every spine it reaches, ≥1:1 at every tier). */
+  function audit(ew){
+    const v=[], P=ew.planes||1, xdr=!!ew.xdr, ib=ew.proto==="ib"&&!xdr;
+    const R = xdr?144:64, Uh=R/2;                       // radix in the fabric's link unit (800G cage / 400G NDR port / 800G XDR port)
+    const chk=(c,m)=>{ if(!c) v.push(m); };
+    if(ew.infeasible) return [ew.infeasible];
+    if(ew.mixed){ chk(ew.mg.links800<=ew.spine*R, `spines: ${ew.mg.links800} links > ${ew.spine}×${R} ports`); chk(ew.mg.links800<=ew.leaf*Uh, `leaves: ${ew.mg.links800} uplinks > ${ew.leaf}×${Uh}`); return v; }
+    if(ew.manual) return v;                              // manual designs carry their own rule flags
+    const lp=ew.leaf/P, sp=ew.spine/P;
+    chk(Number.isInteger(lp)&&Number.isInteger(sp), `counts don't split evenly across ${P} planes`);
+    chk(ew.leaf%2===0, `odd leaf count ${ew.leaf}`);
+    if(ew.spine>0) chk(sp%2===0, `odd spines per plane ${sp}`);
+    /* leaf down-ports per leaf (fullest block) */
+    const npb=Math.min(ew.nodesPerBlock||0, (ew.nodesPerBlock||0));
+    const down = ew.rtx ? ew.downCages/2 : xdr ? 72 : ib ? npb : Math.ceil(npb*2/(ew.legsPerCage||2));
+    if(ew.rtx){ const up=ew.links800;   /* each ISL takes one port on EACH leaf of the pair */ chk(down+up<=R, `RTX leaf ${down}+${up} > ${R}`); chk(up*800>=down*800-1, "RTX ISL below 1:1"); return v; }
+    if(ew.tier===3){
+      const f=ew.fold; if(!f||!f.ok){ v.push("3-tier fabric without a feasible fold"); return v; }
+      chk(down<=Uh, `leaf down ${down} > ${Uh}`);
+      chk(f.coreDown<=R, `core switch down-ports ${f.coreDown} > ${R}`);
+      let leaves=0;
+      for(const x of f.podInfo){ leaves+=x.L;
+        chk(Uh%x.Sp===0&&x.k*x.Sp===Uh, `pod with ${x.L} leaves: ${Uh} uplinks don't stripe evenly over ${x.Sp} spines`);
+        chk(x.down<=Uh&&x.down+x.up<=R, `pod spine ${x.down}↓+${x.up}↑ > ${R}`);
+        chk(x.up>=x.down, `pod spine below 1:1 (${x.up} up < ${x.down} down)`); }
+      chk(leaves===lp, `pods hold ${leaves} leaves ≠ ${lp} per plane`);
+      chk(f.podInfo.reduce((a,x)=>a+x.Sp,0)===sp, `pod spines ${f.podInfo.reduce((a,x)=>a+x.Sp,0)} ≠ ${sp} per plane`);
+      chk(ew.sspine===f.U*f.G*P, `core ${ew.sspine} ≠ ${f.U} groups × ${f.G}`);
+      chk(ew.linksSC===f.podInfo.reduce((a,x)=>a+f.U*x.perGroup,0)*P, "spine↔core link total ≠ Σ per-pod links");
+      return v;
+    }
+    if(ew.regime==="sg"&&ew.sg){
+      const sg=ew.sg, groups=ew.railsPerPlane;
+      chk(sp===groups*sg.size, `spine groups ${groups}×${sg.size} ≠ ${sp}`);
+      chk(16%sg.size===0, `SG size ${sg.size} doesn't divide 16`);
+      chk(2*sg.k*sg.size<=Uh&&down<=Uh, `leaf ${down}↓/${2*sg.k*sg.size}↑ exceeds ${Uh}/${Uh}`);
+      chk(ew.blocks*sg.k<=R, `SG spine down ${ew.blocks*sg.k} > ${R}`);
+      return v;
+    }
+    /* flat 2-tier */
+    const st=ew.stripe;
+    if(sp===0){ chk(lp<=1, `${lp} leaves per plane with no spine tier`); return v; }
+    if(!st){ v.push(`2-tier fabric with ${sp} spines but no striping plan`); return v; }
+    chk(st.S===sp, `stripe over ${st.S} spines ≠ ${sp}`);
+    chk(st.groups.reduce((a,g)=>a+g.leaves,0)===lp, `stripe covers ${st.groups.reduce((a,g)=>a+g.leaves,0)} leaves ≠ ${lp}`);
+    for(const g of st.groups){ chk(Number.isInteger(g.k)&&g.k>=1, `non-integer per-spine links ${g.k}`); chk(g.k*st.S<=Uh, `leaf up ${g.k*st.S} > ${Uh}`); chk(g.k*st.S>=g.up, `leaf below 1:1 (${g.k*st.S} < ${g.up})`); }
+    chk(down<=Uh, `leaf down ${down} > ${Uh}`);
+    chk(st.spineDown<=R, `spine down ${st.spineDown} > ${R} ports`);
+    chk(lp<=R, `${lp} leaves per plane cannot all reach a ${R}-port spine`);
+    return v;
+  }
+
+  /** N-S / storage port audit (same rules as E-W): published rows pass verbatim; derived fabrics re-counted. */
+  function auditNS(ns){
+    const v=[]; if(!ns||ns.merged||ns.manual) return v; const chk=(c,m)=>{ if(!c) v.push(m); };
+    if(ns.infeasible) return [ns.infeasible];
+    chk(ns.leaf%2===0||ns.leaf===1, `odd N-S leaf count ${ns.leaf}`);
+    if(ns.nsStripe){ const st=ns.nsStripe; chk(st.S===ns.spine, "N-S stripe ≠ spines"); chk(st.spineDown<=64, `N-S spine down ${st.spineDown} > 64`);
+      for(const g of st.groups) chk(Number.isInteger(g.k)&&g.k*st.S<=32&&g.k*st.S>=g.up, `N-S leaf uplinks ${g.k}×${st.S} vs ${g.up}`);
+      chk(ns.leaf<=64, `${ns.leaf} N-S leaves > 64-port spine`); }
+    else if(ns.nsFold){ const f=ns.nsFold; chk(f.ok&&f.coreDown<=64, "N-S core radix"); for(const x of f.podInfo) chk(x.down<=32&&x.down+x.up<=64&&32%x.Sp===0, "N-S pod spine radix/striping"); }
+    else if(ns.beyond) chk(ns.spine===0&&ns.leaf<=2, `N-S beyond rows with ${ns.leaf} leaves and no spine plan`);
+    else if(ns.spine>0) chk(ns.leaf<=64&&ns.leaf*32/ns.spine<=64, `N-S row ${ns.leaf} leaves × 32 up over ${ns.spine} spines exceeds 64 ports`);
+    return v;
+  }
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS};
 })();
 
 /* =====================================================================
@@ -1404,6 +1529,8 @@ function buildBOM(input){
     delete ew.__stripe;
     if(ew.mixed) ew.mg={...ew.mg,links800:linksAll};
   }
+  { const av=E.audit(ew); if(av.length) flags.unshift(V.flag(`PHYSICAL PORT AUDIT FAILED — design not buildable as drawn`,av.join("; "))); ew.auditFail=av; }
+  if(ew.infeasible && !ew.manual) throw new Error(`E-W fabric not physically buildable: ${ew.infeasible}. Options: ${isIB&&!ew.xdr?"choose the Quantum-X800 XDR fabric (ConnectX-8 C8180 on InfiniBand — 144-port Q3400), ":""}${!isIB&&(input.planes||1)===1?"select 2 E-W planes (halves the hosts per plane), ":""}reduce the host count, or split the cluster into separate fabrics.`);
   const xdrSel=!!(ewSwitch&&ewSwitch.xdr) && !xdrRA;
   if(xdrSel) flags.push(V.flag(`${ewSwitch.id} (Quantum-X800 / Quantum-3 XDR) E-W fabric`,
     `no NVIDIA enterprise RA or SuperPOD XDR table is published — the leaf/spine counts shown follow the NDR SuperPOD H100 pattern (QM9700 radix) as a PLACEHOLDER only; an NVIDIA XDR reference design, the Q32xx/Q34xx UM Interfaces section (NDR-mode operation, port splits) and the LinkX XDR transceiver family must be ingested before this fabric can be validated`));
@@ -1478,7 +1605,7 @@ function buildBOM(input){
     if(rem) notes.push(`Partial SU: ${input.nodes} nodes = ${sus} SU(s), last SU ${rem} of 72 nodes. The RA designs the fabric for the FULL SU ("designed to support the full SU, leaving unused portions in place") — leaves, spines and leaf↔spine links are sized for ${sus} full SU(s); node-side optics and cables are for the ${input.nodes} real nodes only.`);
     if(sus>=4) flags.push(V.flag(`${sus} SUs on the Quantum-X800 SuperPOD`,`the RA says to contact NVIDIA for DGX SuperPOD solutions of four SUs or more`));
     if(ew.beyond&&!ew.over) flags.push(V.flag(`${sus} SUs — between published Quantum-X800 rows`,`spine count derived with the RA's own striping rule (reproduces rows 1/2/4/8/18 SU exactly) — no published row for ${sus} SUs; NVIDIA confirmation required`));
-    if(ew.over) flags.push(V.flag(`${sus} SUs exceeds the 2-tier Q3400 fabric`,`the 144-port spine radix caps a 2-tier rail-optimized fabric at 18 SUs (1,296 nodes); a 3rd tier is required and no published Quantum-X800 table covers it — NVIDIA large-scale engagement`));
+    if(ew.over) flags.push(V.flag(`${sus} SUs — 3-tier Quantum-X800 fabric (beyond the published 2-tier tables)`,`the 144-port Q3400 caps a 2-tier rail-optimized fabric at 18 SUs (1,296 nodes, 144 leaves); this design is a radix-exact 3-tier folded Clos — ${ew.spineBasis}. Every port count is checked against the 144-port radix, but no NVIDIA-published Quantum-X800 table covers 3 tiers — NVIDIA large-scale engagement required before build`));
     if(input.planes===2) flags.push(V.flag("Dual plane selected on the Quantum-X800 SuperPOD","the RA compute fabric is ONE rail-optimized fat tree (8 XDR rails per node) — sized as published (single fabric)"));
     if(ewn.id!=="CX8-C8180") flags.push(V.flag(`${ewn.id} on the Quantum-X800 XDR fabric`,`the RA attaches DGX B300 ConnectX-8 at 800G XDR — ${ewn.id} is not an XDR adapter; needs NVIDIA confirmation of NDR-mode operation on Q3400 ports`));
     if(!srv||srv.id!=="DGX-B300") flags.push(V.flag(`Quantum-X800 SuperPOD RA applied to ${srv?srv.label:"a generic host"}`,`the RA is written for DGX B300; the host-side module 980-9IAT0-00XM00 is described by NVIDIA as "single port transceiver for ConnectX-8 Mezz Card" (lifecycle EVT) — confirm the module for this platform's ConnectX-8 OSFP cages with ${srv?srv.oem:"the server OEM"} and NVIDIA`));
@@ -1490,22 +1617,25 @@ function buildBOM(input){
     lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — XDR compute leaf (rail-aligned, 72 down / 72 up)`,role:"Leaf",
       qty:ew.leaf, math:`8 rail leaves per SU × ${sus} SU(s)${rem?` (last SU ${rem} of 72 nodes — full SU per the RA)`:""}`,
       status:raSt,cites:["SPOD_XDR","SPOD_XDR_BOM","XDR_UM"]}));
-    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — XDR compute spine`,role:"Spine",
-      qty:ew.spine, math:ew.spineBasis,status:ew.over?"UNVALIDATED":raSt,needs:ew.over?"3-tier Quantum-X800 design (not published)":null,cites:["SPOD_XDR","SPOD_XDR_BOM"]}));
+    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ew.tier===3?` — XDR pod spine (${ew.fold.podInfo[0].down} down to its pod's leaves, ${ew.fold.podInfo[0].up} up to its core group)`:` — XDR compute spine`),role:"Spine",
+      qty:ew.spine, math:ew.spineBasis,status:ew.over?"UNVALIDATED":raSt,needs:ew.over?"3-tier Quantum-X800 design (radix-exact, not NVIDIA-published)":null,cites:["SPOD_XDR","SPOD_XDR_BOM"]}));
+    if(ew.sspine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — XDR core / super-spine (${ew.coreGroups} core groups)`,role:"Super-spine",
+      qty:ew.sspine, math:`${ew.coreGroups} core groups × ${ew.coreGroupSize} switches${ew.planes>1?`/plane × ${ew.planes} planes`:""} — every pod sends ${ew.fold?ew.fold.podInfo[0].perCore:ew.coreStripe} link(s) to each core switch; ${ew.fold?ew.fold.coreDown:"?"}/${ew.fold?ew.fold.R:64} core ports used`,
+      status:"UNVALIDATED",needs:"3-tier Quantum-X800 design (radix-exact, not NVIDIA-published)",cites:["SPOD_XDR","XDR_UM"]}));
     lines.push(V.line({fabric:"ew",sku:C.optics.xdr_host.sku,desc:C.optics.xdr_host.label+" — host side, one per ConnectX-8 OSFP cage",role:"Optic",spareable:true,
       qty:ew.xH, math:`${input.nodes} hosts × ${hostLegs} XDR ports (RA Table 7: 'Transceivers on DGX', 576 nodes → 4,608)`,
       status:"VALIDATED",cites:C.optics.xdr_host.cites}));
     lines.push(V.line({fabric:"ew",sku:C.optics.xdr_twin.sku,desc:C.optics.xdr_twin.label+" — leaf, node-facing",role:"Optic",spareable:true,
       qty:ew.xLS, math:`${ew.xH.toLocaleString()} node links ÷ 2 per twin-port cage (RA Table 7 prints 2034 for 576 nodes; its own math gives 2,304)`,
       status:"VALIDATED",cites:C.optics.xdr_twin.cites}));
-    lines.push(V.line({fabric:"ew",sku:C.optics.xdr_twin.sku,desc:C.optics.xdr_twin.label+" — leaf↔spine, both ends",role:"Optic",spareable:true,
-      qty:ew.xSS, math:`${ew.linksSS.toLocaleString()} × 800G links × 2 ends ÷ 2 per twin-port (RA Table 7: 4,608 for 576 nodes)`,
+    lines.push(V.line({fabric:"ew",sku:C.optics.xdr_twin.sku,desc:C.optics.xdr_twin.label+(ew.tier===3?" — leaf↔pod spine and pod spine↔core, both ends":" — leaf↔spine, both ends"),role:"Optic",spareable:true,
+      qty:ew.xSS, math:ew.tier===3?`(${ew.links800.toLocaleString()} leaf↔spine + ${ew.linksSC.toLocaleString()} spine↔core) × 800G links × 2 ends ÷ 2 per twin-port`:`${ew.linksSS.toLocaleString()} × 800G links × 2 ends ÷ 2 per twin-port (RA Table 7: 4,608 for 576 nodes)`,
       status:ew.over?"UNVALIDATED":"VALIDATED",cites:C.optics.xdr_twin.cites}));
     lines.push(V.line({fabric:"fiber",sku:C.optics.xdr_cable.sku,desc:C.optics.xdr_cable.label+" — node↔leaf (XDR)",role:"Fiber trunk",spareable:true,
       qty:ew.cH, math:`1 per 800G node link × ${ew.cH.toLocaleString()} (RA Table 7 'DGX-Leaf Cable')`,
       status:"UNVALIDATED",needs:"SMF MPO cable OPN for 1310 nm DR4 XDR optics — the RA-listed OPN is described by NVIDIA as MMF (fiber-type conflict)",cites:C.optics.xdr_cable.cites}));
-    lines.push(V.line({fabric:"fiber",sku:C.optics.xdr_cable.sku,desc:C.optics.xdr_cable.label+" — leaf↔spine (XDR)",role:"Fiber trunk",spareable:true,
-      qty:ew.cSS, math:`1 per 800G leaf↔spine link × ${ew.cSS.toLocaleString()} (RA Table 7 'Leaf-Spine Cable')`,
+    lines.push(V.line({fabric:"fiber",sku:C.optics.xdr_cable.sku,desc:C.optics.xdr_cable.label+(ew.tier===3?" — leaf↔spine and spine↔core (XDR)":" — leaf↔spine (XDR)"),role:"Fiber trunk",spareable:true,
+      qty:ew.cSS, math:ew.tier===3?`1 per 800G link × (${ew.links800.toLocaleString()} leaf↔spine + ${ew.linksSC.toLocaleString()} spine↔core)`:`1 per 800G leaf↔spine link × ${ew.cSS.toLocaleString()} (RA Table 7 'Leaf-Spine Cable')`,
       status:"UNVALIDATED",needs:"SMF MPO cable OPN for 1310 nm DR4 XDR optics — the RA-listed OPN is described by NVIDIA as MMF (fiber-type conflict)",cites:C.optics.xdr_cable.cites}));
     lines.push(V.line({fabric:"ew",sku:"920-9B020-00RA-0D0",desc:"NVIDIA UFM Appliance 3.5 — fabric management, on four FNM ports of the Q3400 switches (RA)",role:"Fabric mgmt",
       qty:2, math:"RA Table 7 lists 2 for the 8-SU / 576-node SuperPOD (HA pair)",status:"VALIDATED",cites:["SPOD_XDR_BOM","SPOD_XDR_NET"]}));
@@ -1526,11 +1656,11 @@ function buildBOM(input){
     lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ewSwitch.alt?` (alt: ${ewSwitch.alt})`:"")+` — IB leaf (${ewSwitch.note||ewSwitch.life})`,role:"Leaf",
       qty:ew.leaf, math:`${ew.leavesPerBlock}/SU (1 rail per leaf) × ${ew.blocks} SU(s) — SuperPOD H100 pattern`,
       status:xdrSt("VERIFIED"),needs:xdrNd(null),cites:ewSwitch.cites}));
-    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ew.tier===3?` — IB pod spine (32 ports down, 32 up to core)`:` — IB spine`),role:"Spine",
+    lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ew.tier===3?` — IB pod spine (${ew.fold.podInfo[0].down} ports down, ${ew.fold.podInfo[0].up} up to core)`:` — IB spine`),role:"Spine",
       qty:ew.spine, math:`${ew.spineBasis}`,
       status:xdrSt("VERIFIED"),needs:xdrNd(null),cites:xdrSel?ewSwitch.cites:["SPOD_H100","QM97X0"]}));
     if(ew.sspine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — IB core / super-spine (${ew.coreGroups} core groups)`,role:"Super-spine",
-      qty:ew.sspine, math:`${ew.spine.toLocaleString()} pod spines × 32 up-ports ÷ 64 per core switch = ${ew.coreGroups} groups × ${ew.coreGroupSize}`,
+      qty:ew.sspine, math:`${ew.coreGroups} core groups × ${ew.coreGroupSize} switches${ew.planes>1?`/plane × ${ew.planes} planes`:""} — every pod sends ${ew.fold?ew.fold.podInfo[0].perCore:ew.coreStripe} link(s) to each core switch; ${ew.fold?ew.fold.coreDown:"?"}/${ew.fold?ew.fold.R:64} core ports used`,
       cites:["QM97X0"],status:ew.overCore?"UNVALIDATED":"VERIFIED",needs:ew.overCore?"exceeds the 64-pod 3-tier maximum on QM9700 radix — Quantum-X800 class or 4-tier required":null}));
     const ibHo=hostOpt(ewn,effPorts), ibHostOptic=ibHo.o;
     const ibNdr200 = ewn.speedG<400;
@@ -1540,7 +1670,7 @@ function buildBOM(input){
       cites:["LINKX","CX7",...(ibNdr200?[ewn.ff.startsWith("OSFP")?"LINKX_OSFP400":"LINKX_Q112"]:[])]}));
     lines.push(V.line({fabric:"ew",sku:C.optics.twin800.sku,desc:C.optics.twin800.label+` — ${ewSwitch.id} cages, host-facing (2×400G NDR legs; LinkX names Quantum-2 as the primary application)`,role:"Optic",spareable:true,
       qty:ew.xLS, math:`${ew.xH.toLocaleString()} rails ÷ 2 per twin-port cage`,status:xdrSt("VERIFIED"),needs:xdrNd(null)&&"LinkX XDR transceiver family documentation — NDR twin-port modules shown as placeholder on XDR cages",cites:["LINKX","QM97X0"]}));
-    lines.push(V.line({fabric:"ew",sku:C.optics.twin800.sku,desc:C.optics.twin800.label+" — leaf↔spine, both ends (2×400G NDR per twin-port)",role:"Optic",spareable:true,
+    lines.push(V.line({fabric:"ew",sku:C.optics.twin800.sku,desc:C.optics.twin800.label+(ew.tier===3?" — leaf↔spine and spine↔core, both ends (2×400G NDR per twin-port)":" — leaf↔spine, both ends (2×400G NDR per twin-port)"),role:"Optic",spareable:true,
       qty:ew.xSS, math:`${ew.linksSS.toLocaleString()} × 400G links ÷ 2 per twin-port × 2 ends`,status:xdrSt("VERIFIED"),needs:xdrNd(null)&&"LinkX XDR transceiver family documentation — NDR twin-port modules shown as placeholder on XDR cages",cites:["LINKX","SPOD_H100"]}));
     if(ibNdr200)
       lines.push(V.line({fabric:"fiber",sku:`${C.fiber.splitter.sku}-${reach}`,desc:C.fiber.splitter.label+" — 400G twin-port leg → 2× NDR200 host rails (IB)",role:"Fiber trunk",spareable:true,
@@ -1548,14 +1678,14 @@ function buildBOM(input){
     else
       lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+" — host↔leaf (IB)",role:"Fiber trunk",spareable:true,
         qty:ew.cH, math:`1 per 400G rail × ${ew.cH.toLocaleString()}`,status:"VERIFIED",cites:C.fiber.straight.cites}));
-    lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+" — leaf↔spine (IB)",role:"Fiber trunk",spareable:true,
+    lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+(ew.tier===3?" — leaf↔spine and spine↔core (IB)":" — leaf↔spine (IB)"),role:"Fiber trunk",spareable:true,
       qty:ew.cSS, math:`${ew.linksSS.toLocaleString()} × 400G links × 1 MPO-12 each`,status:"VERIFIED",cites:C.fiber.straight.cites}));
     lines.push(V.line({fabric:"ew",sku:input.nodes>2000?"QM9790 + UFM":"— (included: QM9700 SM)",desc:input.nodes>2000?"UFM fabric management (externally managed QM9790 fleet)":"Subnet manager — onboard the managed QM9700 (≤2,000 nodes per QM97XX UG); UFM optional",role:"Fabric mgmt",
       qty:1, math:"per fabric",status:"UNVALIDATED",needs:"UFM Enterprise SKU/appliance datasheet for the ordered quantity (and SM placement design at scale)",cites:["QM97X0","SPOD_H100"]}));
   } else {
     if(input.planes===2) notes.push(`Dual-plane E-W fabric: validated pattern per DGX SuperPOD B300 (twin-planar blue/green compute fabric; Nov 19, 2025) and the NVL72 AI Factory dual-plane RA. Note: the HGX AI Factory RA itself publishes a single-plane fabric — plane count here follows the SuperPOD pattern.`);
     if(!isRTX && ew.tier===2 && input.nodes > C.rules.maxNodesHGX) flags.push(V.flag(`${input.nodes.toLocaleString()} nodes (> ${C.rules.maxNodesHGX})`,`beyond the HGX AI Factory RA tested scale (128 nodes); 2-tier remains radix-feasible here — ${ew.regime==="sg"?"rail-aligned spine groups per the DGX SuperPOD B300 Table 3 pattern":"flat spine-leaf, matching the SuperPOD B300 linear pattern"}. NVIDIA engagement required for ≥4 SUs per that RA`));
-    if(!isRTX && ew.tier===3) flags.push(V.flag(`${input.nodes.toLocaleString()} nodes / ${(input.nodes*input.gph).toLocaleString()} GPUs — 3-tier fabric`,`a flat 2-tier fabric is NOT cablable at this scale (leaf up-radix = 32 cages, spine down-radix = 64): design moves to a 3-tier folded Clos — ${ew.spineBasis}. Port-exact per the switch datasheet, but no NVIDIA-published table exists at this scale (SuperPOD B300 Table 3 ends at 1,024 nodes; the RAs name super-spine for the largest designs) — NVIDIA large-scale engagement required before build`));
+    if(!isRTX && ew.tier===3) flags.push(V.flag(`${input.nodes.toLocaleString()} nodes / ${(input.nodes*input.gph).toLocaleString()} GPUs — 3-tier fabric`,`a flat 2-tier fabric is NOT cablable at this scale (leaf up-radix = ${ew.fold?ew.fold.U:32} cages, spine down-radix = ${ew.fold?ew.fold.R:64}): design moves to a 3-tier folded Clos — ${ew.spineBasis}. Port-exact per the switch datasheet, but no NVIDIA-published table exists at this scale (SuperPOD B300 Table 3 ends at 1,024 nodes; the RAs name super-spine for the largest designs) — NVIDIA large-scale engagement required before build`));
     if(!ewSwitch.aiDesign) flags.push(V.flag(`${ewSwitch.oem} E-W fabric topology rules`,ewSwitch.aiNeeds+" — switch hardware itself validated from the official datasheet; counts computed with the universal non-blocking Clos math"));
 
     lines.push(V.line({fabric:"ew",sku:ewn.sku||"—",desc:ewn.label+(ewn.alt?` (alt: ${ewn.alt})`:"")+(effPorts!==ewn.ports?" — one of two ports enabled on this platform (RA)":"")+builtInTxt,role:"NIC / SuperNIC",builtIn:nicBuiltIn,
@@ -1564,11 +1694,11 @@ function buildBOM(input){
     lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — E-W leaf (${ewSwitch.life})`,role:"Leaf",
       qty:ew.leaf, math:ew.rtx?`collapsed leaf pair per RTX PRO RA Table 6 (≤32 nodes)`:`${ew.leavesPerBlock}/block/plane × ${ew.blocks} block(s) × ${ew.planes} plane(s); block = ${ew.nodesPerBlock} nodes`,
       status:ewSwitch.aiDesign?"VALIDATED":"VERIFIED",cites:ew.rtx?["RTXPRO","SN5K"]:ewSwitch.cites,eol:!!ewSwitch.eol}));
-    if(ew.spine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ew.tier===3?` — pod spine (32 cages down to pod leaves, 32 up to core)`:(ew.regime==="sg"?` — E-W spine (rail-aligned spine groups)`:` — E-W spine`)),role:"Spine",
-      qty:ew.spine, math:(ew.tier===3?`1 per pod leaf — `:``)+(ew.spineBasis||`${ew.upCages.toLocaleString()} uplink 800G cages ÷ 64/switch (1:1), min 2/plane`),
+    if(ew.spine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+(ew.tier===3?` — pod spine (${ew.fold.podInfo[0].down} cages down to pod leaves, ${ew.fold.podInfo[0].up} up to core)`:(ew.regime==="sg"?` — E-W spine (rail-aligned spine groups)`:` — E-W spine`)),role:"Spine",
+      qty:ew.spine, math:(ew.spineBasis||`${ew.upCages.toLocaleString()} uplink 800G cages ÷ 64/switch (1:1), min 2/plane`),
       status:(ew.tier===3||ew.regime==="sg")?"VERIFIED":(ewSwitch.aiDesign?"VALIDATED":"VERIFIED"),cites:ew.regime==="sg"?[...ewSwitch.cites,"SPOD"]:ewSwitch.cites,eol:!!ewSwitch.eol}));
     if(ew.sspine>0) lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+` — E-W core / super-spine (${ew.coreGroups} core groups; tier named by the RA for the largest designs)`,role:"Super-spine",
-      qty:ew.sspine, math:`${ew.spine.toLocaleString()} pod spines × 32 up-cages ÷ 64 per core switch = ${ew.coreGroups} groups × ${ew.coreGroupSize}/plane × ${ew.planes} plane(s)`,
+      qty:ew.sspine, math:`${ew.coreGroups} core groups × ${ew.coreGroupSize} switches${ew.planes>1?`/plane × ${ew.planes} planes`:""} — every pod sends ${ew.fold?ew.fold.podInfo[0].perCore:ew.coreStripe} link(s) to each core switch; ${ew.fold?ew.fold.coreDown:"?"}/${ew.fold?ew.fold.R:64} core ports used`,
       cites:["RA_PHYS","SN5K"],status:ew.overCore?"UNVALIDATED":"VERIFIED",needs:ew.overCore?"exceeds the 64-pod 3-tier maximum — 4-tier or higher-radix core required":null}));
 
     /* host-end optics by NIC form factor */
@@ -1696,15 +1826,20 @@ function buildBOM(input){
       const r=dPer/Math.max(1,S*k); ratio=`${r.toFixed(2)} : 1`;
       if(r>1.0001) flags.push(V.flag(`N-S oversubscribed ${r.toFixed(2)} : 1`,`${dPer} down vs ${S*k} up per leaf — the converged N-S RA design is 1:1`));
     }
-    ns.leaf=L; ns.spine=S; ns.merged=false; ns.adjusted=true; ns.manual=true;
+    ns.leaf=L; ns.spine=S; ns.sspine=0; ns.merged=false; ns.adjusted=true; ns.manual=true;
     ns.xSS=2*links; ns.cSS=2*links; ns.pISL=2*links;
     ns.basis=`MANUAL counts: ${L} leaf + ${S} spine — ${alloc} allocated 800G ports (${dPer}/leaf), ${S?`${k} uplink(s) to each of ${S} spines`:"leaf-pair ISL"}; ${links} switch↔switch links; oversubscription ${ratio}`;
   }
+  if(ns.infeasible) throw new Error(`N-S fabric not physically buildable: ${ns.infeasible}.`);
+  { const nv=E.auditNS(ns); if(nv.length) flags.unshift(V.flag("PHYSICAL PORT AUDIT FAILED — N-S design not buildable as drawn",nv.join("; "))); }
   if(ns.merged) notes.push(`Converged N-S at ${input.nodes} nodes: merged into the E-W switches per ${ns.tableName||"the RTX PRO RA"} (≤4 SUs) — no separate N-S switches; its transceivers/cables below are additional to the E-W counts.`);
   else lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+" — converged N-S leaf"+(ns.spine?"":" (collapsed spine-leaf)"),role:"Leaf",
-    qty:ns.leaf, math:ns.basis,cites:ns.cite?[ns.cite,"SN5K"]:nsSwitch.cites,eol:!!nsSwitch.eol}));
-  if(ns.spine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+" — converged N-S spine",role:"Spine",
-    qty:ns.spine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol}));
+    qty:ns.leaf, math:ns.basis,cites:ns.cite?[ns.cite,"SN5K"]:nsSwitch.cites,eol:!!nsSwitch.eol,...(ns.beyond?{status:"VERIFIED"}:{})}));
+  if(ns.spine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+(ns.sspine?" — converged N-S pod spine":" — converged N-S spine"),role:"Spine",
+    qty:ns.spine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol,...(ns.beyond?{status:"VERIFIED"}:{})}));
+  if(ns.sspine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+` — converged N-S core / super-spine (${ns.nsFold.coreGroups} groups × ${ns.nsFold.coreGroupSize})`,role:"Super-spine",
+    qty:ns.sspine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol,status:"VERIFIED"}));
+  if(ns.beyond&&!ns.merged) flags.push(V.flag(`N-S beyond the published RA rows (${ns.leaf} leaf + ${ns.spine} spine${ns.sspine?` + ${ns.sspine} core`:""})`,`the RA tables stop at 128 nodes; this N-S fabric is sized as ONE connected, radix-exact fabric from the port allocations — not an NVIDIA-published configuration (NVIDIA engagement required)`));
   {
     const nsHo=hostOpt(nsn,nsn.ports), nsHostOptic=nsHo.o;
     const ns400=ns.nsSpeedG>=400;
@@ -1757,7 +1892,12 @@ function buildBOM(input){
     notes.push(`Storage rides the converged N-S fabric per the governing RA (VLAN-isolated): ${ns.pStor}×800G switch ports allocated to storage ≥ ${C.rules.storageGbpsPerGpu} Gb/s per GPU (${tGpus.toLocaleString()} GPUs × 12.5G = ${(tGpus*12.5/1000).toFixed(1)} Tb/s requirement). Physical-separation rule satisfied by explicit RA allowance — RA, Networking Physical Topologies.`);
   } else {
     const stGbps = tGpus*C.rules.storageGbpsPerGpu;
-    const stLeaf = Math.max(2,2*Math.ceil(stGbps/(64*800)));
+    /* ≤ one 64×800G leaf per plane ⇒ unchanged (2 leaves, dual-plane). Beyond that a plane has several
+       leaves, which need a spine tier: 32 down / 32 up per leaf, spines by closLS (radix-exact) */
+    const stPP = Math.ceil(stGbps/2/(64*800));
+    const stLPP = stPP<=1 ? 1 : 2*Math.ceil(Math.ceil(stGbps/2/(32*800))/2);
+    const stClos = stLPP>1 ? E.closLS(stLPP,2) : null;
+    const stLeaf = 2*stLPP;
     let stSwitch = E.pickSwitch(C,input.stoem||"NVIDIA","st-leaf");
     if(input.stswmode==="manual"&&input.stswitch){
       const m=E.find(C.switches,input.stswitch);
@@ -1767,8 +1907,13 @@ function buildBOM(input){
       }
     }
     lines.push(V.line({fabric:"st",sku:stSwitch.sku,desc:stSwitch.label+" — dedicated storage leaf (dual-plane)",role:"Leaf",
-      qty:stLeaf, math:`${tGpus.toLocaleString()} GPUs × ${C.rules.storageGbpsPerGpu}G = ${(stGbps/1000).toFixed(1)} Tb/s, dual-plane, min 2 switches`,cites:stSwitch.cites,
+      qty:stLeaf, math:`${tGpus.toLocaleString()} GPUs × ${C.rules.storageGbpsPerGpu}G = ${(stGbps/1000).toFixed(1)} Tb/s, dual-plane${stClos?` — ${stLPP} leaves/plane (32↓/32↑); ${stClos.basis}`:", min 2 switches (1 per plane)"}`,cites:stSwitch.cites,
       status:"UNVALIDATED",needs:"the governing RA converges storage with N-S; a dedicated storage fabric variant needs an NVIDIA or storage-vendor validated design (SuperPOD B300 offers SN5600 or QM9700 dedicated storage — ingest that section to validate)"}));
+    if(stClos&&stClos.infeasible) throw new Error(`Dedicated storage fabric not physically buildable: ${stClos.infeasible}.`);
+    if(stClos&&stClos.spine) lines.push(V.line({fabric:"st",sku:stSwitch.sku,desc:stSwitch.label+(stClos.sspine?" — dedicated storage pod spine":" — dedicated storage spine")+" (per plane ×2)",role:"Spine",
+      qty:stClos.spine*2, math:`${stLPP} leaves/plane — ${stClos.basis}; ×2 planes`,cites:stSwitch.cites,status:"UNVALIDATED",needs:"dedicated storage fabric design (no RA covers it) — spine tier sized radix-exact; ISL optics/fiber not modeled until the storage design is validated"}));
+    if(stClos&&stClos.sspine) lines.push(V.line({fabric:"st",sku:stSwitch.sku,desc:stSwitch.label+" — dedicated storage core (per plane ×2)",role:"Super-spine",
+      qty:stClos.sspine*2, math:`${stClos.basis}; ×2 planes`,cites:stSwitch.cites,status:"UNVALIDATED",needs:"dedicated storage fabric design (no RA covers it)"}));
     if(input.stnicn>0){
       const stn = E.find(C.nics,input.stnic);
       lines.push(V.line({fabric:"st",sku:stn.sku||"—",desc:stn.label+" — dedicated storage NIC"+feBuiltInTxt(input.stnic),role:"NIC",builtIn:feBuiltIn(input.stnic),
@@ -1923,7 +2068,7 @@ const Exporter = {
       :`E-W (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}): rail-optimized, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine (UNVALIDATED sizing)`:""} (${bom.ewSwitch.sku}); ${bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap}`);
     if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s = uplink ${p.upG.toLocaleString()} Gb/s (1:1); cages ${p.cagesUsed}/${p.cagesAvail}`);
     if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s ≤ uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (1:1 non-blocking)`);
-    if(inc2.ns) out.push(`N-S (converged, per RA): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""} (${bom.nsSwitch.sku}); node attach ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" redundant":" single-homed (flagged)"}`);
+    if(inc2.ns) out.push(`N-S (converged, per RA): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""}${bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()} core`:""} (${bom.nsSwitch.sku}); node attach ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" redundant":" single-homed (flagged)"}`);
     if(inc2.ew) out.push(`Transport: ${bom.ew.proto==="ib"?(bom.ew.xdr?CATALOG.rules.transportXDR:CATALOG.rules.transportIB):CATALOG.rules.transport}`);
     if(inc2.oob) out.push(bom.mixed
       ?`OOB: ${bom.oob.switches.toLocaleString()}× shared 1G mgmt switches, ${bom.oob.cat6.toLocaleString()}× Cat6A (both host groups)`
@@ -2481,7 +2626,7 @@ const Exporter = {
     const xs=(m,bw,gap,cx)=>{const x0=(cx??W/2)-(m*bw+(m-1)*gap)/2;return Array.from({length:m},(_,k)=>x0+k*(bw+gap)+bw/2);};
     const ellip=(cx,cy)=>`<line x1="${cx-24}" y1="${cy}" x2="${cx+24}" y2="${cy}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`;
     const box=(x,y,w,h,st,da)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="var(--card)" stroke="${st}" stroke-width="1.6"${da?' stroke-dasharray="4 4"':''}/>`;
-    const suN=isIB?32:4, lpb=bom.ew.leavesPerBlock, lvsT=lpb*bom.ew.planes;
+    const suN=bom.ew.xdr?72:isIB?32:4, lpb=bom.ew.leavesPerBlock, lvsT=lpb*bom.ew.planes;
     const lY=46,lH=46, hY=180,hH=46, nY=306,nH=44;
     const lRow=slotRow(lvsT,4), lXs=xs(lRow.length,150,34);
     const hRow=slotRow(suN,4), hXs=xs(hRow.length,150,34);
@@ -2516,6 +2661,14 @@ const Exporter = {
   }
 
   /* ---- Abstraction level 2 (3-tier only): one pod — leaf blocks → 32 pod spines ---- */
+  /* 3-tier geometry from the engine's radix-exact fold (never hard-coded): U leaf up-ports, R radix,
+     full = a full pod's {L leaves, Sp spines, k links leaf→spine, down/up per pod spine, perCore}, last = last pod */
+  function F3(b){ const ew=b.ew, f=ew.fold&&ew.fold.ok?ew.fold:null, U=f?f.U:32, R=f?f.R:64;
+    const full=f?f.podInfo[0]:{L:U,Sp:U,k:1,down:U,up:U,perCore:ew.coreStripe||1,touch:ew.coreGroupSize,perGroup:U};
+    const last=f?f.podInfo[f.podInfo.length-1]:full, partial=!!f&&last!==full&&(last.L!==full.L);
+    const unit=ew.xdr?"800G XDR":ew.proto==="ib"?"400G NDR":"800G";
+    const lastNote=partial?`last pod: ${last.L} leaves → ${last.Sp} pod spines × ${last.k} link(s) each; ${last.touch<f.G?`1 link to ${last.touch} of the ${f.G} switches per core group`:`${last.perCore} link(s) per core switch`}`:"";
+    return {f,U,R,G:ew.coreGroupSize,full,last,partial,unit,lastNote,coreDown:f?f.coreDown:ew.pods*(ew.coreStripe||1)}; }
   function podSVG(bom){
     const W=900,H=330;
     const slotRow=(total,max)=>{ if(total<=max) return Array.from({length:total},(_,k)=>({i:k+1}));
@@ -2523,24 +2676,24 @@ const Exporter = {
     const xs=(m,bw,gap)=>{const x0=W/2-(m*bw+(m-1)*gap)/2;return Array.from({length:m},(_,k)=>x0+k*(bw+gap)+bw/2);};
     const ellip=(cx,cy)=>`<line x1="${cx-24}" y1="${cy}" x2="${cx+24}" y2="${cy}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`;
     const spn=Math.min(32,bom.ew.leaf/bom.ew.planes>32?32:bom.ew.leaf/bom.ew.planes);
-    const podBlocks=Math.max(1,Math.floor(32/bom.ew.leavesPerBlock));
-    const sRow=slotRow(32,3), sXs=xs(sRow.length,130,46), spY=50,spH=40;
+    const podBlocks=F3(bom).f?F3(bom).f.bpp:Math.max(1,Math.floor(32/bom.ew.leavesPerBlock));
+    const q=F3(bom), sRow=slotRow(q.full.Sp,3), sXs=xs(sRow.length,130,46), spY=50,spH=40;
     const bRow=slotRow(podBlocks,4), bXs=xs(bRow.length,170,30), bY=196,bH=52;
     const realS=sRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell), realB=bRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell);
     let L="",B="",D="";
     for(const s of realS) L+=`<line x1="${sXs[s.k]}" y1="${spY}" x2="${sXs[s.k]}" y2="${spY-22}" stroke="var(--rail3)" stroke-width="2.2"/><polygon points="${sXs[s.k]-4},${spY-20} ${sXs[s.k]+4},${spY-20} ${sXs[s.k]},${spY-28}" fill="var(--rail3)"/>`;
     for(const b of realB) for(const s of realS) L+=`<line x1="${bXs[b.k]}" y1="${bY}" x2="${sXs[s.k]}" y2="${spY+spH}" stroke="var(--border)" stroke-width="2"/>`;
-    B+=`<text x="12" y="${spY-26}" fill="var(--muted)" font-size="10">↑ pod spine #g: ALL 32 uplinks → the 32 switches of core group #g (1 each) — never to another group</text>`;
+    B+=`<text x="12" y="${spY-26}" fill="var(--muted)" font-size="10">↑ pod spine #g: its ${q.full.up} uplinks → the ${q.G} switches of core group #g (${q.full.perCore} each) — never to another group</text>`;
     sRow.forEach((s,k)=>{ if(s.ell){B+=ellip(sXs[k],spY+spH/2);return;}
-      B+=`<rect x="${sXs[k]-65}" y="${spY}" width="130" height="${spH}" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1.6"/><text x="${sXs[k]}" y="${spY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${s.i}</text><text x="${sXs[k]}" y="${spY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">32↓ pod · 32↑ core</text>`;});
+      B+=`<rect x="${sXs[k]-65}" y="${spY}" width="130" height="${spH}" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1.6"/><text x="${sXs[k]}" y="${spY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${s.i}</text><text x="${sXs[k]}" y="${spY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.down}↓ pod · ${q.full.up}↑ core</text>`;});
     bRow.forEach((s,k)=>{ if(s.ell){B+=ellip(bXs[k],bY+bH/2);return;}
       B+=`<rect x="${bXs[k]-85}" y="${bY}" width="170" height="${bH}" rx="6" fill="var(--card)" stroke="var(--rail1)" stroke-width="1.6"/><text x="${bXs[k]}" y="${bY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">Leaf block ${s.i}</text><text x="${bXs[k]}" y="${bY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.leavesPerBlock} leaf · ${bom.ew.nodesPerBlock} nodes · rails 1–${bom.ew.railsPerPlane}</text>`;});
     for(const s of realS) D+=`<circle cx="${sXs[s.k]}" cy="${spY+spH}" r="3.4" fill="var(--muted)"/>`;
     for(const b of realB) D+=`<circle cx="${bXs[b.k]}" cy="${bY}" r="3.4" fill="var(--rail1)"/>`;
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="One pod: leaf blocks connected to 32 pod spines">
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="One pod: leaf blocks connected to ${q.full.Sp} pod spines">
       ${L}${B}${D}
-      <text x="${W/2}" y="${H-24}" text-anchor="middle" fill="var(--muted)" font-size="10">One pod (per plane) = ${podBlocks} leaf blocks = ${bom.ew.podNodes} nodes · every leaf sends 1×${bom.ew.ssLinkG===800?"800G cage":"2×400G"} to each of the 32 pod spines (32↑ per leaf = 1:1)</text>
-      <text x="${W/2}" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.pods} pod(s) in this fabric · pods interconnect ONLY through the core groups above</text></svg>`;
+      <text x="${W/2}" y="${H-24}" text-anchor="middle" fill="var(--muted)" font-size="10">One pod (per plane) = ${podBlocks} leaf blocks = ${bom.ew.podNodes} nodes · every leaf sends ${q.full.k}×${q.unit} to each of the ${q.full.Sp} pod spines (${q.U}↑ per leaf = 1:1)</text>
+      <text x="${W/2}" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.pods} pod(s) in this fabric${q.partial?` · ${q.lastNote}`:""} · pods interconnect ONLY through the core groups above</text></svg>`;
   }
 
   /* ---- Abstraction level 3 (3-tier only): one core group — spine #g of every pod → the group's core switches ---- */
@@ -2557,17 +2710,17 @@ const Exporter = {
     const realC=cRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell), realP=pRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell);
     let L="",B="",D="";
     for(const p of realP) for(const c of realC) L+=`<line x1="${pXs[p.k]}" y1="${pY}" x2="${cXs[c.k]}" y2="${cY+cH}" stroke="var(--border)" stroke-width="2"/>`;
-    const perSw=bom.ew.coreStripe||Math.max(1,Math.round(32/bom.ew.coreGroupSize)); // even striping: 32/S links per pod spine per switch
+    const q=F3(bom), perSw=q.full.perCore; // equal integer links per pod per core switch (fold3)
     cRow.forEach((s,k)=>{ if(s.ell){B+=ellip(cXs[k],cY+cH/2);return;}
-      B+=`<rect x="${cXs[k]-75}" y="${cY}" width="150" height="${cH}" rx="6" fill="var(--card)" stroke="var(--rail3)" stroke-width="1.6"/><text x="${cXs[k]}" y="${cY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">group ${g} · switch ${s.i}</text><text x="${cXs[k]}" y="${cY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">64 down (pod spines #${g})</text>`;});
+      B+=`<rect x="${cXs[k]-75}" y="${cY}" width="150" height="${cH}" rx="6" fill="var(--card)" stroke="var(--rail3)" stroke-width="1.6"/><text x="${cXs[k]}" y="${cY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">group ${g} · switch ${s.i}</text><text x="${cXs[k]}" y="${cY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.coreDown}/${q.R} ports used</text>`;});
     B+=`<text x="890" y="${cY+14}" text-anchor="end" fill="var(--muted)" font-size="10">${bom.ew.coreGroupSize.toLocaleString()} switches = group ${g}</text><text x="890" y="${cY+28}" text-anchor="end" fill="var(--muted)" font-size="10">one of ${bom.ew.coreGroups} groups</text>`;
     pRow.forEach((s,k)=>{ if(s.ell){B+=ellip(pXs[k],pY+pH/2);return;}
-      B+=`<rect x="${pXs[k]-85}" y="${pY}" width="170" height="${pH}" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1.6"/><text x="${pXs[k]}" y="${pY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod ${s.i} — spine #${g}</text><text x="${pXs[k]}" y="${pY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">all 32 uplinks in · ${perSw}/switch</text>`;});
+      B+=`<rect x="${pXs[k]-85}" y="${pY}" width="170" height="${pH}" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1.6"/><text x="${pXs[k]}" y="${pY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod ${s.i} — spine #${(q.partial&&s.i===bom.ew.pods)?Math.ceil(g/(q.U/q.last.Sp)):g}</text><text x="${pXs[k]}" y="${pY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${(q.partial&&s.i===bom.ew.pods)?`${q.last.perGroup} links · ${q.last.touch<q.G?`1 to ${q.last.touch} of ${q.G} sw`:`${q.last.perCore}/switch`}`:`${q.full.perGroup} links · ${perSw}/switch`}</text>`;});
     for(const c of realC) D+=`<circle cx="${cXs[c.k]}" cy="${cY+cH}" r="3.4" fill="var(--rail3)"/>`;
     for(const p of realP) D+=`<circle cx="${pXs[p.k]}" cy="${pY}" r="3.4" fill="var(--muted)"/>`;
     return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="Core group ${g}: spine number ${g} of every pod connects into this group's core switches">
       ${L}${B}${D}
-      <text x="${W/2}" y="${H-24}" text-anchor="middle" fill="var(--muted)" font-size="10">wiring: pod p spine #${g} → group ${g}'s switches 1…${bom.ew.coreGroupSize} (${perSw} link each), never to another group · per switch: ${bom.ew.pods} pods × ${perSw} = ${bom.ew.pods*perSw} of 64 ports${bom.ew.pods*perSw<64?` (room to ${2*bom.ew.coreGroupSize} pods)`:""}</text>
+      <text x="${W/2}" y="${H-24}" text-anchor="middle" fill="var(--muted)" font-size="10">wiring: pod p spine #${g} → group ${g}'s switches 1…${bom.ew.coreGroupSize} (${perSw} link each), never to another group · per core switch: ${q.coreDown} of ${q.R} ports used — within radix</text>
       <text x="${W/2}" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">group ${g} carries spine ${g} of ALL pods${pln?` (plane ${pln} — plane ${pln==="A"?"B":"A"} identical)`:""} · no group↔group links · path: leaf → spine ${g} → group ${g} → remote spine ${g} → leaf (1:1)</text></svg>`;
   }
 
@@ -2642,12 +2795,12 @@ const Exporter = {
     const trunk=(cx,y1,y2)=>[-8,0,8].map(o=>`<line x1="${cx+o}" y1="${y1}" x2="${cx+o}" y2="${y2}" stroke="var(--border)" stroke-width="2.2"/>`).join("");
     let s="", y=40; const y0=y;
     if(t3){
-      for(const c of cols) s+=Dtier(c.cx,bw,y,`Core — 32 groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,32,"Group","coregroup","var(--rail3)",`${sspp.toLocaleString()} sw this plane`,c.pl).svg;
+      for(const c of cols) s+=Dtier(c.cx,bw,y,`Core — ${F3(b).U} groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,F3(b).U,"Group","coregroup","var(--rail3)",`${sspp.toLocaleString()} sw this plane`,c.pl).svg;
       y+=66;
       for(const c of cols) s+=trunk(c.cx,y,y+26);
       s+=Dclk("podcore","spine-to-core-group map",`<rect x="282" y="${y+3}" width="336" height="20" rx="10" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="292" y="${y+17}" fill="var(--brand)" font-size="9.5" font-weight="700">▸ spine #g → group #g map (per plane) · no diagonals</text>`);
       y+=26;
-      for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${sw}`,32,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · 32↓/32↑`,c.pl).svg;
+      for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${sw}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · ${F3(b).full.down}↓/${F3(b).full.up}↑`,c.pl).svg;
       y+=66;
     } else {
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Spine tier — ${spp.toLocaleString()}× ${sw}`,spp,"spine","spine2t","var(--muted)",
@@ -2685,14 +2838,14 @@ const Exporter = {
     let s="", y=16;
     const isIB=ew.proto==="ib";
     if(t3){
-      s+=Dtier(450,760,y,`Super-spine tier — 32 core groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,32,"Group","coregroup","var(--rail3)",`${ew.sspine.toLocaleString()} switches total`).svg;
+      s+=Dtier(450,760,y,`Super-spine tier — ${F3(b).U} core groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,F3(b).U,"Group","coregroup","var(--rail3)",`${ew.sspine.toLocaleString()} switches total`).svg;
       y+=66; s+=Dtrunk(y,y+26);
       s+=Dclk("podcore","spine-to-core-group map",`<rect x="470" y="${y+2}" width="340" height="22" rx="11" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="480" y="${y+17}" fill="var(--brand)" font-size="10" font-weight="700">▸ spine #g → group #g map · ${ew.linksSC.toLocaleString()}×${ew.ssLinkG}G, no diagonals</text>`);
       y+=26;
     }
     if(!rtx){
       if(t3){
-        s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${sw} total`,32,"spine","podspine","var(--muted)","32↓ pod / 32↑ its group").svg;
+        s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${sw} total`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${F3(b).full.down}↓ pod / ${F3(b).full.up}↑ its group`).svg;
       } else {
         s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${sw}`,ew.spine/ew.planes,"spine","spine2t","var(--muted)",
           isIB?(ew.xdr?(ew.published?`SuperPOD B300 XDR row (${ew.blocks} SU)`:"even-striped, between XDR rows"):ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
@@ -2721,7 +2874,8 @@ const Exporter = {
   function nsOv(b){
     if(b.mixed) return genMixedNsOv(b,true);
     const ns=b.ns, sw=b.nsSwitch.id; let s="", y=16;
-    if(ns.spine>0){ s+=Dtier(450,760,y,`N-S spine switch tier — ${ns.spine.toLocaleString()}× ${sw}`,ns.spine,"spine","nsspine","var(--ok)","1:1 northbound").svg; y+=66; s+=Dtrunk(y,y+22); y+=22;}
+    if(ns.sspine>0){ const f=ns.nsFold; s+=Dband(y,`N-S core tier — ${f.coreGroups} groups × ${f.coreGroupSize}× ${sw} = ${ns.sspine.toLocaleString()}`,`pod spine g ↔ core group g · ${f.coreDown}/64 ports per core switch`,"var(--ok)"); y+=46; s+=Dtrunk(y,y+22,`${ns.linksSC.toLocaleString()}×800G spine↔core`); y+=22; }
+    if(ns.spine>0){ s+=Dtier(450,760,y,`N-S ${ns.sspine?"pod spine":"spine switch"} tier — ${ns.spine.toLocaleString()}× ${sw}${ns.sspine?` · ${ns.nsFold.pods} pods`:""}`,ns.spine,"spine","nsspine","var(--ok)",ns.nsStripe?`${ns.nsStripe.groups[0].k} uplink(s) from every leaf · ${ns.nsStripe.spineDown}/64 down`:"1:1 northbound").svg; y+=66; s+=Dtrunk(y,y+22); y+=22;}
     if(ns.merged){
       s+=Dband(y,`Converged N-S — merged into the E-W leaves`,`no separate N-S switches at this scale (RA ≤4 SUs) · VLAN-isolated`,"var(--ok)","nsleaf","N-S leaf allocation",true);
       y+=46;
@@ -2738,9 +2892,14 @@ const Exporter = {
     if(b.mixed) return mStOv(b);
     const ns=b.ns, ded=b.st.mode==="dedicated", gpus=b.totalGpus||b.input.nodes*b.input.gph;
     let s="", y=16;
-    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
+    const stQ=r=>b.lines.filter(l=>l.fabric==="st"&&l.role===r).reduce((a,l)=>a+l.qty,0);   /* single source of truth: the BOM */
+    const stLeaf=stQ("Leaf")||2, stSpine=stQ("Spine"), stCore=stQ("Super-spine");
     s+=Dband(y,"Storage arrays","far-end optics per storage-vendor compatibility matrix (UNVALIDATED line in the BOM)","var(--warn)","storage","storage attach");
     y+=46; s+=Dtrunk(y,y+26,ded?"array ports per vendor matrix":`${ns.pStor.toLocaleString()}×800G`); y+=26;
+    if(ded&&stSpine){
+      if(stCore){ s+=Dband(y,`Dedicated storage core — ${stCore}× ${b.nsSwitch.id} (both planes)`,"UNVALIDATED — sized radix-exact","var(--warn)"); y+=46; s+=Dtrunk(y,y+22); y+=22; }
+      s+=Dband(y,`Dedicated storage spines — ${stSpine}× ${b.nsSwitch.id} (both planes)`,"every leaf stripes evenly to its plane's spines · UNVALIDATED","var(--warn)"); y+=46; s+=Dtrunk(y,y+22); y+=22;
+    }
     if(ded){
       s+=Dtier(450,760,y,`Dedicated storage leaf tier — ${stLeaf}× ${b.nsSwitch.id} (RA deviation — flagged)`,stLeaf,"leaf","stleaf","var(--warn)","dual-plane · RoCE lossless").svg;
       y+=66;
@@ -2815,7 +2974,7 @@ const Exporter = {
     pln=ew.planes===2?(pln==="B"?"B":"A"):null;
     const hi=(x,y,w,h)=>`<rect x="${x-3}" y="${y-3}" width="${w+6}" height="${h+6}" rx="8" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`;
     if(ew.regime==="sg"){
-      const sg=Math.ceil(ew.blocks/4);
+      const sg=ew.sg?ew.sg.size:Math.ceil(ew.blocks/4), sgk=ew.sg?ew.sg.k:16/sg;
       const spp=ew.railsPerPlane*sg;
       si=Math.max(1,Math.min(si||1,spp));
       const rail=Math.ceil(si/sg), j=si-(rail-1)*sg;
@@ -2826,16 +2985,16 @@ const Exporter = {
         s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--border)" stroke-width="2"/>`;
       tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
         if(o.i===j) s+=hi(tXs[k]-tW/2,tY,tW,44);
-        s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SG-${rail} spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">64 down-cages</text>`;});
+        s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SG-${rail} spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${ew.blocks*sgk}/64 down-cages</text>`;});
       bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+24);return;}
-        s+=Dbox(bXs[k]-85,bY,170,48,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">block ${o.i} — rail-${rail} leaf</text><text x="${bXs[k]}" y="${bY+36}" text-anchor="middle" fill="var(--muted)" font-size="10">16 up-cages into this SG</text>`;});
+        s+=Dbox(bXs[k]-85,bY,170,48,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">block ${o.i} — rail-${rail} leaf</text><text x="${bXs[k]}" y="${bY+36}" text-anchor="middle" fill="var(--muted)" font-size="10">${sgk} up-cage(s) to each SG spine</text>`;});
       return Dsvg(bY+48+58,`Spine ${si} — inside spine group SG-${rail}`,s,
-        `spine ${si} = member ${j} of SG-${rail} (rail ${rail}, one of ${ew.railsPerPlane} SGs/plane × ${sg}) · the rail-${rail} leaf of EVERY block sends 16 up-cages into this SG`,
-        `SG spine: ${ew.blocks} rail-leaves × 16 ÷ ${sg} = 64 down-cages exactly · pattern per DGX SuperPOD B300 Table 3`);
+        `spine ${si} = member ${j} of SG-${rail} (rail ${rail}, one of ${ew.railsPerPlane} SGs/plane × ${sg}) · the rail-${rail} leaf of EVERY block sends ${sgk} up-cage(s) to each of the ${sg} SG spines`,
+        `SG spine: ${ew.blocks} rail-leaves × ${sgk} = ${ew.blocks*sgk} of 64 down-cages · pattern per DGX SuperPOD B300 Table 3`);
     }
     const spp=ew.spine/ew.planes, lpp=ew.leaf/ew.planes;
     si=Math.max(1,Math.min(si||1,spp));
-    const st=ew.stripe, per=st?(st.kMin===st.kMax?`${st.kMax}`:`${st.kMin}–${st.kMax}`):Math.round(32/spp*10)/10;
+    const st=ew.stripe, RR=ew.xdr?144:64, per=st?(st.kMin===st.kMax?`${st.kMax}`:`${st.kMin}–${st.kMax}`):"?";
     const tRow=DslotAt(spp,si), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
     const bRow=Dslot(lpp,4), bXs=Dxs(bRow.length,160,30), bY=190;
     let s="";
@@ -2843,12 +3002,12 @@ const Exporter = {
       s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--border)" stroke-width="2"/>`;
     tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
       if(o.i===si) s+=hi(tXs[k]-tW/2,tY,tW,44);
-      s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${st?`${st.spineDown}/64 down-ports`:"≤64 down"}</text>`;});
+      s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${st?`${st.spineDown}/${RR} down-ports`:"no striping plan"}</text>`;});
     bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
-      s+=Dbox(bXs[k]-80,bY,160,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${(()=>{const u=DleafUp(b,o.i);return u?`${u.up} uplinks · ${u.k} per spine`:"32 up-cages";})()}</text>`;});
+      s+=Dbox(bXs[k]-80,bY,160,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${(()=>{const u=DleafUp(b,o.i);return u?`${u.up} uplinks · ${u.k} per spine`:"—";})()}</text>`;});
     return Dsvg(bY+46+58,`Spine ${si}${pln?` (plane ${pln})`:""} in the flat 2-tier spread`,s,
       `spine ${si} (highlighted) takes ${per} uplink${per==="1"?"":"s"} from EVERY leaf${pln?` of plane ${pln} — plane ${pln==="A"?"B":"A"} is an independent copy`:""} — identical role across all ${spp} spines`,
-      st?`even striping: ${spp} spines (even) · every leaf sends the same whole number of uplinks to each spine · ${st.spineDown}/64 spine ports used`:`radix check: leaves ${lpp} ≤ 64 spine down-radix · spines ${spp} ≤ 32 leaf up-radix`);
+      st?`even striping: ${spp} spines (even) · every leaf sends the same whole number of uplinks to each spine · ${st.spineDown}/${RR} spine ports used · ${lpp} leaves ≤ ${RR}`:`NO STRIPING PLAN — this view cannot be drawn truthfully (port audit failed; see flags)`);
   }
   function nsLeafSVG(b,li){
     const ns=b.ns; let s="";
@@ -2969,8 +3128,8 @@ const Exporter = {
 
   /* One pod's 32 spines fanning to the 32 core groups — the spine s ↔ group s one-to-one map. */
   function podCoreSVG(b){
-    const ew=b.ew, gY=40,gH=48, sY=210,sH=48;
-    const row=Dslot(32,4), xsA=Dxs(row.length,150,40);   // same x for both rows → straight vertical bundles
+    const ew=b.ew, gY=40,gH=48, sY=210,sH=48, q=F3(b);
+    const row=Dslot(q.U,4), xsA=Dxs(row.length,150,40);   // same x for both rows → straight vertical bundles
     let s="";
     /* pod frame around the spine row */
     s+=`<rect x="${xsA[0]-85}" y="${sY-26}" width="${xsA[xsA.length-1]+85-(xsA[0]-85)}" height="${sH+36}" rx="10" fill="none" stroke="var(--fg)" stroke-width="1.3" stroke-dasharray="6 5"/>`
@@ -2979,34 +3138,34 @@ const Exporter = {
       if(o.ell){ s+=Dell(xsA[k],gY+gH/2)+Dell(xsA[k],sY+sH/2)+Dell(xsA[k],(gY+gH+sY)/2); return; }
       const c=railC4[k%4];
       for(const off of [-8,0,8]) s+=`<line x1="${xsA[k]+off}" y1="${sY}" x2="${xsA[k]+off}" y2="${gY+gH}" stroke="${c}" stroke-width="2.4" opacity="0.85"/>`;
-      s+=`<text x="${xsA[k]+16}" y="${(gY+gH+sY)/2+4}" fill="${c}" font-size="9.5" font-weight="600">32×${ew.ssLinkG}G</text>`;
+      s+=`<text x="${xsA[k]+16}" y="${(gY+gH+sY)/2+4}" fill="${c}" font-size="9.5" font-weight="600">${q.full.perGroup}×${q.unit}</text>`;
       s+=Dbox(xsA[k]-75,gY,150,gH,c)+`<text x="${xsA[k]}" y="${gY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">Core group ${o.i}</text><text x="${xsA[k]}" y="${gY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">${ew.coreGroupSize.toLocaleString()}× switches</text>`;
-      s+=Dbox(xsA[k]-75,sY,150,sH,c)+`<text x="${xsA[k]}" y="${sY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${o.i}</text><text x="${xsA[k]}" y="${sY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">32 uplinks → group ${o.i} only</text>`;
+      s+=Dbox(xsA[k]-75,sY,150,sH,c)+`<text x="${xsA[k]}" y="${sY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${o.i}</text><text x="${xsA[k]}" y="${sY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.up} uplinks → group ${o.i} only</text>`;
       s+=`<circle cx="${xsA[k]}" cy="${sY}" r="3.4" fill="${c}"/><circle cx="${xsA[k]}" cy="${gY+gH}" r="3.4" fill="${c}"/>`;});
     return Dsvg(sY+sH+68,"One pod's spines mapped one-to-one onto the core groups",s,
       `one-to-one, no diagonals: spine s never reaches group t≠s — every pod repeats this identical map, so group s holds spine s of ALL ${ew.pods} pods`,
-      `pod northbound = 32 bundles × 32×${ew.ssLinkG}G = pod host bandwidth (1:1) · each bundle fans 1 link per group switch${ew.planes===2?" · identical in planes A and B":""}`);
+      `pod northbound = ${q.U} bundles × ${q.full.perGroup}×${q.unit} = pod host bandwidth (1:1)${q.partial?` · ${q.lastNote}`:""} · each bundle fans 1 link per group switch${ew.planes===2?" · identical in planes A and B":""}`);
   }
 
   /* One pod spine (3-tier): 32 down to ITS pod's leaves · 32 up to core group = its own index. */
   function podSpineSVG(b,si,pln){
-    si=Math.max(1,Math.min(si||1,32));
-    const ew=b.ew, S=ew.coreGroupSize, stripe=ew.coreStripe||Math.max(1,Math.round(32/S));
+    const q=F3(b); si=Math.max(1,Math.min(si||1,q.full.Sp));
+    const ew=b.ew, S=ew.coreGroupSize, stripe=q.full.perCore;
     pln=ew.planes===2?(pln==="B"?"B":"A"):null;
     const gY=26,gH=40, pY=168,pH=50, lY=300,lH=40;
     const gRow=Dslot(S,3), gXs=Dxs(gRow.length,160,40);
-    const lRow=Dslot(32,4), lXs=Dxs(lRow.length,150,28);
+    const lRow=Dslot(q.full.L,4), lXs=Dxs(lRow.length,150,28);
     let s="";
     gRow.forEach((o,k)=>{ if(o.ell){s+=Dell(gXs[k],gY+gH/2);return;}
       s+=`<line x1="450" y1="${pY}" x2="${gXs[k]}" y2="${gY+gH}" stroke="var(--rail3)" stroke-width="2" opacity="0.9"/>`;
       s+=Dbox(gXs[k]-80,gY,160,gH,"var(--rail3)")+`<text x="${gXs[k]}" y="${gY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">group ${si} · switch ${o.i}</text><text x="${gXs[k]}" y="${gY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${stripe} link(s) from this spine</text>`;});
-    s+=`<text x="450" y="${gY+gH+34}" text-anchor="middle" fill="var(--rail3)" font-size="10" font-weight="600">32 uplinks → core group ${si} ONLY (${stripe}/switch × ${S}) — never group t≠${si}</text>`;
-    s+=Dbox(340,pY,220,pH,"var(--brand)")+`<text x="450" y="${pY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${si}</text><text x="450" y="${pY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.ewSwitch.id} · 32↓ / 32↑</text>`;
+    s+=`<text x="450" y="${gY+gH+34}" text-anchor="middle" fill="var(--rail3)" font-size="10" font-weight="600">${q.full.up} uplinks → core group ${si} ONLY (${stripe}/switch × ${S}) — never group t≠${si}</text>`;
+    s+=Dbox(340,pY,220,pH,"var(--brand)")+`<text x="450" y="${pY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${si}</text><text x="450" y="${pY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.ewSwitch.id} · ${q.full.down}↓ / ${q.full.up}↑ of ${q.R}</text>`;
     lRow.forEach((o,k)=>{ if(o.ell){s+=Dell(lXs[k],lY+lH/2);return;}
       s+=`<line x1="${lXs[k]}" y1="${lY}" x2="450" y2="${pY+pH}" stroke="var(--rail1)" stroke-width="1.5" opacity="0.85"/>`;
-      s+=Dbox(lXs[k]-70,lY,140,lH,"var(--rail1)")+`<text x="${lXs[k]}" y="${lY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod leaf ${o.i}</text><text x="${lXs[k]}" y="${lY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">1×${ew.ssLinkG}G to this spine</text>`;});
+      s+=Dbox(lXs[k]-70,lY,140,lH,"var(--rail1)")+`<text x="${lXs[k]}" y="${lY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod leaf ${o.i}</text><text x="${lXs[k]}" y="${lY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.k}×${q.unit} to this spine</text>`;});
     return Dsvg(lY+lH+58,`Pod spine ${si}${pln?` (plane ${pln})`:""} connectivity`,s,
-      `spine ${si} wires IDENTICALLY in every pod${pln?` — shown in plane ${pln}; plane ${pln==="A"?"B":"A"} is an independent copy`:""}: 1 link from each of its pod's 32 leaves · 32 uplinks to group ${si}`,
+      `spine ${si} wires IDENTICALLY in every pod${pln?` — shown in plane ${pln}; plane ${pln==="A"?"B":"A"} is an independent copy`:""}: ${q.full.k} link(s) from each of its pod's ${q.full.L} leaves · ${q.full.up} uplinks to group ${si}${q.partial?` · ${q.lastNote}`:""}`,
       `spine index = core group index: this is what keeps the ${ew.coreGroups} groups as independent parallel paths (1:1 end to end)`);
   }
 
@@ -3042,9 +3201,9 @@ const Exporter = {
       if(o.i===si) s+=`<rect x="${tXs[k]-tW/2-3}" y="${tY-3}" width="${tW+6}" height="50" rx="8" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`;
       s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--ok)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${sw} · 64×800G</text>`;});
     bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
-      s+=Dbox(bXs[k]-80,bY,160,46,"var(--ok)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">uplinks to every spine</text>`;});
+      s+=Dbox(bXs[k]-80,bY,160,46,"var(--ok)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${ns.sspine?"uplinks to its pod's spines":"uplinks to every spine"}</text>`;});
     return Dsvg(bY+46+58,`N-S spine ${si} detail`,s,
-      `spine ${si} (highlighted) takes an equal uplink share from EVERY N-S leaf — identical across all ${ns.spine.toLocaleString()} spines · 1:1 northbound`,
+      ns.sspine?`pod spine ${si} (highlighted) takes ${ns.nsFold.podInfo[0].k} uplink(s) from every leaf of ITS pod (≤${ns.nsFold.podLeavesMax} leaves) and ${ns.nsFold.podInfo[0].up} up to its core group — pods meet only at the core`:`spine ${si} (highlighted) takes ${ns.nsStripe?ns.nsStripe.groups[0].k:"an equal"} uplink(s) from EVERY N-S leaf — identical across all ${ns.spine.toLocaleString()} spines · 1:1 northbound`,
       (ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis));
   }
   /* ---- Customer / DC core handoff ---- */
@@ -3077,7 +3236,8 @@ const Exporter = {
   /* ---- Dedicated storage leaf tier (storage mode = dedicated) ---- */
   function stLeafSVG(b,li){
     const gpus=b.input.nodes*b.input.gph;
-    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
+    const stQ=r=>b.lines.filter(l=>l.fabric==="st"&&l.role===r).reduce((a,l)=>a+l.qty,0);   /* single source of truth: the BOM */
+    const stLeaf=stQ("Leaf")||2, stSpine=stQ("Spine"), stCore=stQ("Super-spine");
     li=Math.max(1,Math.min(li||1,stLeaf));
     const aY=16, lY=120, lH=48, hY=252, hH=44;
     let s="";
@@ -3130,9 +3290,9 @@ const Exporter = {
     const per=n=>dual?`${(n/2).toLocaleString()} per plane × 2 planes = ${n.toLocaleString()} total`:`${n.toLocaleString()} total`;
     let s="", y=16;
     if(t3){
-      s+=Dband(y,`Core tier — 32 core groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,`${per(ew.sspine)} · pod spine g ↔ core group g, one-to-one, no diagonals`,"var(--rail3)");
+      s+=Dband(y,`Core tier — ${F3(b).U} core groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,`${per(ew.sspine)} · pod spine g ↔ core group g, one-to-one, no diagonals`,"var(--rail3)");
       y+=46; s+=Dtrunk(y,y+24,`${ew.linksSC.toLocaleString()}×${ew.ssLinkG}G`); y+=24;
-      s+=Dband(y,`Pod spine tier — ${sw}`,`${per(ew.spine)} · ${ew.pods.toLocaleString()} pod(s) · each switch 32 down / 32 up`,"var(--muted)");
+      s+=Dband(y,`Pod spine tier — ${sw}`,`${per(ew.spine)} · ${ew.pods.toLocaleString()} pod(s) · each switch ${F3(b).full.down} down / ${F3(b).full.up} up of ${F3(b).R}`,"var(--muted)");
       y+=46; s+=Dtrunk(y,y+24,`${(ew.links800??ew.links400).toLocaleString()}×${ew.ssLinkG}G leaf↔spine`); y+=24;
     } else if(!rtx){
       s+=Dband(y,`Spine - Leaf connectivity per plane — ${sw}`,`${per(ew.spine)}${isIB?" · SuperPOD pattern":(ew.regime==="sg"?` · ${ew.railsPerPlane} rail-aligned spine groups per plane`:" · flat 2-tier")}`,"var(--muted)");
@@ -3350,7 +3510,8 @@ const Exporter = {
   }
   function genStOv(b){
     const ns=b.ns, ded=b.st.mode==="dedicated", gpus=b.totalGpus||b.input.nodes*b.input.gph; let s="", y=16;
-    const stLeaf=Math.max(2,2*Math.ceil(gpus*12.5/(64*800)));
+    const stQ=r=>b.lines.filter(l=>l.fabric==="st"&&l.role===r).reduce((a,l)=>a+l.qty,0);   /* single source of truth: the BOM */
+    const stLeaf=stQ("Leaf")||2, stSpine=stQ("Spine"), stCore=stQ("Super-spine");
     s+=Dband(y,"Storage arrays","far-end optics per storage-vendor compatibility matrix (no quantities — far end not yet defined)","var(--warn)");
     y+=46; s+=Dtrunk(y,y+24,ded?"array ports per vendor matrix":`${ns.pStor.toLocaleString()}×800G`); y+=24;
     if(ded) s+=Dband(y,`Dedicated storage leaf tier — ${stLeaf}× ${b.nsSwitch.id}`,"per-plane design (dual-plane) · RoCE lossless · RA deviation — flagged","var(--warn)");
@@ -3465,10 +3626,10 @@ const Exporter = {
       su:{t:i=>`Inside SU ${(i||1).toLocaleString()} — hosts & E-W NICs`,f:suEwSVG},
       leafblock:{t:(i,p)=>`Leaf ${p?p+"-":""}${(i||1).toLocaleString()} — inside its leaf block${p?` (plane ${p})`:""}`,f:leafBlockSVG},
       pod:{t:`Inside one pod — ${b.ew.podNodes} nodes per plane`,f:podSVG},
-      podspine:{t:(i,p)=>`Pod spine ${i||1}${p?` (plane ${p})`:""} — 32↓ its pod · 32↑ core group ${i||1}`,f:podSpineSVG},
+      podspine:{t:(i,p)=>`Pod spine ${i||1}${p?` (plane ${p})`:""} — down to its pod's leaves · up to core group ${i||1}`,f:podSpineSVG},
       spine2t:{t:(i,p)=>`Spine ${i||1}${p?` (plane ${p})`:""} — leaf↔spine spread`,f:spine2tSVG},
       coregroup:{t:(i,p)=>`Inside core group ${i||1}${p?` (plane ${p})`:""} — spine #${i||1} of every pod ↔ its core switches`,f:coreGroupSVG},
-      podcore:{t:"One pod → the 32 core groups (spine s ↔ group s, one-to-one)",f:podCoreSVG},
+      podcore:{t:"One pod → the core groups (spine s ↔ group s, one-to-one)",f:podCoreSVG},
       nsleaf:{t:i=>b.ns.merged?"Converged N-S allocation (merged into E-W leaves)":`N-S leaf ${i||1} — its pair & node attach`,f:nsLeafSVG},
       nsspine:{t:i=>`N-S spine ${i||1} — leaf↔spine spread`,f:nsSpineSVG},
       stleaf:{t:i=>`Storage leaf ${i||1} (plane ${(i||1)%2?"A":"B"}) — dedicated tier`,f:stLeafSVG},
@@ -3603,7 +3764,7 @@ const Exporter = {
       B+=`<rect x="${x}" y="${y}" width="${suW}" height="${suH}" rx="6" fill="var(--card)" stroke="var(--fg)" stroke-width="1.4"/>`
         +`<text x="${suCx(i)}" y="${y+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${suNo.toLocaleString()}</text>`
         +`<text x="${suCx(i)}" y="${y+31}" text-anchor="middle" fill="var(--muted)">4 nodes</text>`;}
-    B+=box(nsB,"var(--ok)")+`<text x="${nsB.x+nsB.w/2}" y="${nsB.y+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S fabric — ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""} (${bom.nsSwitch.id})</text><text x="${nsB.x+nsB.w/2}" y="${nsB.y+35}" text-anchor="middle" fill="var(--muted)">8×200G per SU · storage · customer · support</text>`;
+    B+=box(nsB,"var(--ok)")+`<text x="${nsB.x+nsB.w/2}" y="${nsB.y+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S fabric — ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""}${bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()} core`:""} (${bom.nsSwitch.id})</text><text x="${nsB.x+nsB.w/2}" y="${nsB.y+35}" text-anchor="middle" fill="var(--muted)">8×200G per SU · storage · customer · support</text>`;
     B+=box(oobB,"var(--muted)",true)+`<text x="${oobB.x+oobB.w/2}" y="${oobB.y+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">OOB — ${bom.oob.switches.toLocaleString()}× SN2201 (1 per SU)</text><text x="${oobB.x+oobB.w/2}" y="${oobB.y+35}" text-anchor="middle" fill="var(--muted)">12×1G per node · 2×100G uplinks each</text>`;
     D+=`<circle cx="${spB.x+spB.w/2}" cy="${spB.y+spB.h}" r="3.4" fill="var(--muted)"/>`;
     for(let k=0;k<totalBlockBoxes;k++){ if(bkIsEll(k))continue; D+=`<circle cx="${bCx(k)}" cy="${by}" r="3.4" fill="var(--muted)"/><circle cx="${bCx(k)}" cy="${by+bh}" r="3.4" fill="var(--rail3)"/>`;}
@@ -3685,7 +3846,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         ${bom.mixed?"":kpi(suDef(bom).c.toLocaleString(),"Scalable units",`${suDef(bom).n} hosts/SU${bom.input.nodes%suDef(bom).n?` · last ${bom.input.nodes%suDef(bom).n} of ${suDef(bom).n}`:""}`,"")}
         ${bom.inc.ew&&bom.ew.tier===3?kpi(bom.ew.pods.toLocaleString(),"Pods",bom.ew.planes===2?"per plane":"","k2"):""}
         ${bom.inc.ew?kpi((bom.ew.leaf+bom.ew.spine+bom.ew.sspine).toLocaleString(),"E-W switches",bom.ew.sspine?"leaf + spine + core":"leaf + spine","k2"):""}
-        ${bom.inc.ns?kpi(bom.ns.merged?"0":(bom.ns.leaf+bom.ns.spine).toLocaleString(),"N-S switches",bom.ns.merged?"merged into E-W":"","k3"):""}
+        ${bom.inc.ns?kpi(bom.ns.merged?"0":(bom.ns.leaf+bom.ns.spine+(bom.ns.sspine||0)).toLocaleString(),"N-S switches",bom.ns.merged?"merged into E-W":"","k3"):""}
         ${bom.inc.st&&i.stmode==="dedicated"?kpi(Math.max(2,2*Math.ceil(tG*12.5/(64*800))).toLocaleString(),"Storage switches","dedicated","k3"):""}
         ${bom.inc.oob?kpi(bom.oob.switches.toLocaleString(),"OOB switches",bom.mixed?"shared 1G mgmt":"SN2201","k4"):""}
       </div>
@@ -3699,7 +3860,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
             <div class="big">${bom.ew.leaf.toLocaleString()} + ${bom.ew.spine.toLocaleString()}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()}`:""} <small>leaf + spine${bom.ew.sspine?" + core":""}</small></div>
             <div class="meta"><span class="mono">${esc(bom.ewSwitch.id)}</span> · ${bom.mixed?`shared leaf-spine · 2 host groups · ${bom.ew.mg.downG.toLocaleString()}G host bandwidth`:`${bom.ew.tier===3?"3-tier Clos":"leaf-spine"} · ${ri0.rails} rails/host${bom.ew.planes===2?" per plane":""} @ ${bom.ew.railSpeed}G`}</div></div>`:""}
           ${bom.inc.ns?`<div class="fabcard ns"><div class="fh">North-South ${stIcon(fst.ns)}</div>
-            <div class="big">${bom.ns.merged?"merged":bom.ns.leaf.toLocaleString()+(bom.ns.spine?` + ${bom.ns.spine}`:"")} <small>${bom.ns.merged?"into E-W leaves":"leaf"+(bom.ns.spine?" + spine":"")}</small></div>
+            <div class="big">${bom.ns.merged?"merged":bom.ns.leaf.toLocaleString()+(bom.ns.spine?` + ${bom.ns.spine.toLocaleString()}`:"")+(bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()}`:"")} <small>${bom.ns.merged?"into E-W leaves":"leaf"+(bom.ns.spine?" + spine":"")+(bom.ns.sspine?" + core":"")}</small></div>
             <div class="meta"><span class="mono">${esc(bom.nsSwitch.id)}</span> · ${bom.mixed?"per-group front-end NICs":`${i.nsnicn}× ${esc(i.nsnic)} / host`} · ${(bom.ns.nsPortsPerNode||2)>=2?"dual-homed":"single-homed"}</div></div>`:""}
           ${bom.inc.st?`<div class="fabcard st"><div class="fh">Storage ${stIcon(fst.st)}</div>
             <div class="big">${i.stmode==="dedicated"?Math.max(2,2*Math.ceil(tG*12.5/(64*800))).toLocaleString()+" <small>dedicated leaves</small>":"converged <small>with N-S</small>"}</div>
@@ -3775,7 +3936,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
 ${bom.ew.tier===3?`Fabric links: ${(bom.ew.links800??bom.ew.links400).toLocaleString()} leaf↔spine + ${bom.ew.linksSC.toLocaleString()} spine↔core ${bom.ew.ssLinkG}G links · ${bom.ew.spine.toLocaleString()} pod spines + ${bom.ew.sspine.toLocaleString()} core switches
 Radix check: ${bom.ew.proof.tiers||""}
 Topology: ${bom.ew.spineBasis}`:`E-W spine: ${bom.ew.linksSS.toLocaleString()} × ${bom.ew.ssLinkG}G leaf↔spine links across ${bom.ew.spine.toLocaleString()} spines (1:1)${bom.ew.spineBasis?` — ${bom.ew.spineBasis}`:""}`}
-N-S (converged): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""} — ${esc(bom.ns.basis)}
+N-S (converged): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""}${bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()} core`:""} — ${esc(bom.ns.basis)}
   node attach: ${i.nodes.toLocaleString()} × ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" to two switches (redundant)":" single-homed (flagged)"}; storage ${bom.ns.pStor.toLocaleString()}×800G, customer ${bom.ns.pCust.toLocaleString()}×800G, support ${bom.ns.pSupp}×800G, ISL ${bom.ns.pISL.toLocaleString()} port-ends${bom.future?`
 At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.leaf.toLocaleString()} leaf + ${bom.future.ew.spine.toLocaleString()} spine${bom.future.ew.sspine?` + ${bom.future.ew.sspine} super-spine`:""} · N-S ${bom.future.ns.leaf.toLocaleString()} leaf${bom.future.ns.spine?` + ${bom.future.ns.spine} spine`:""} · OOB ${bom.future.oob.switches.toLocaleString()}× SN2201 (per-line quantities in the '@ ${bom.future.nodes.toLocaleString()} hosts' column)`:""}</div>`:""}
         ${bom.inc.ew?`<div class="note"><b>Transport:</b> ${esc(bom.ew.proto==="ib"?CATALOG.rules.transportIB:CATALOG.rules.transport)}.</div>`:""}
@@ -3925,7 +4086,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="65";
+  const APP_BUILD="66";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
