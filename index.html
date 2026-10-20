@@ -2680,7 +2680,11 @@ const Exporter = {
     const last=f?f.podInfo[f.podInfo.length-1]:full, partial=!!f&&last!==full&&(last.L!==full.L);
     const unit=ew.xdr?"800G XDR":ew.proto==="ib"?"400G NDR":"800G";
     const lastNote=partial?`last pod: ${last.L} leaves → ${last.Sp} pod spines × ${last.k} link(s) each; ${last.touch<f.G?`1 link to ${last.touch} of the ${f.G} switches per core group`:`${last.perCore} link(s) per core switch`}`:"";
-    return {f,U,R,G:ew.coreGroupSize,full,last,partial,unit,lastNote,coreDown:f?f.coreDown:ew.pods*(ew.coreStripe||1)}; }
+    const G=ew.coreGroupSize, P=ew.pods;
+    const spineOf=(p,g)=>{ const x=(partial&&p===P)?last:full; return Math.ceil(g/(U/x.Sp)); };
+    const linksTo=(p,sw)=>{ const x=(partial&&p===P)?last:full; if(x.touch<G) return sw<=x.touch?1:0; return x.perCore; };
+    const lastShort=partial?`last pod: ${last.L} leaves → ${last.Sp} spines`:"";
+    return {f,U,R,G,full,last,partial,unit,lastNote,lastShort,spineOf,linksTo,coreDown:f?f.coreDown:ew.pods*(ew.coreStripe||1)}; }
   function podSVG(bom){
     const W=900,H=330;
     const slotRow=(total,max)=>{ if(total<=max) return Array.from({length:total},(_,k)=>({i:k+1}));
@@ -2694,7 +2698,10 @@ const Exporter = {
     const realS=sRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell), realB=bRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell);
     let L="",B="",D="";
     for(const s of realS) L+=`<line x1="${sXs[s.k]}" y1="${spY}" x2="${sXs[s.k]}" y2="${spY-22}" stroke="var(--rail3)" stroke-width="2.2"/><polygon points="${sXs[s.k]-4},${spY-20} ${sXs[s.k]+4},${spY-20} ${sXs[s.k]},${spY-28}" fill="var(--rail3)"/>`;
-    for(const b of realB) for(const s of realS) L+=`<line x1="${bXs[b.k]}" y1="${bY}" x2="${sXs[s.k]}" y2="${spY+spH}" stroke="var(--border)" stroke-width="2"/>`;
+    { const W=[], lpb=bom.ew.leavesPerBlock, kk=q.full.k;
+      for(const bb of realB) for(const ss of realS) W.push({x1:bXs[bb.k],y1:bY,x2:sXs[ss.k],y2:spY+spH,c:"var(--rail1)",lab:`×${lpb*kk}`,
+        tt:`Leaf block ${bb.s.i} (${lpb} leaves) → pod spine ${ss.s.i}: ${lpb} leaves × ${kk} = ${lpb*kk} × ${q.unit}`});
+      D+=Dwires(W); }
     B+=`<text x="12" y="${spY-26}" fill="var(--muted)" font-size="10">↑ pod spine #g: its ${q.full.up} uplinks → the ${q.G} switches of core group #g (${q.full.perCore} each) — never to another group</text>`;
     sRow.forEach((s,k)=>{ if(s.ell){B+=ellip(sXs[k],spY+spH/2);return;}
       B+=`<rect x="${sXs[k]-65}" y="${spY}" width="130" height="${spH}" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1.6"/><text x="${sXs[k]}" y="${spY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${s.i}</text><text x="${sXs[k]}" y="${spY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.down}↓ pod · ${q.full.up}↑ core</text>`;});
@@ -2705,7 +2712,7 @@ const Exporter = {
     return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="One pod: leaf blocks connected to ${q.full.Sp} pod spines">
       ${L}${B}${D}
       <text x="${W/2}" y="${H-24}" text-anchor="middle" fill="var(--muted)" font-size="10">One pod (per plane) = ${podBlocks} leaf blocks = ${bom.ew.podNodes} nodes · every leaf sends ${q.full.k}×${q.unit} to each of the ${q.full.Sp} pod spines (${q.U}↑ per leaf = 1:1)</text>
-      <text x="${W/2}" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.pods} pod(s) in this fabric${q.partial?` · ${q.lastNote}`:""} · pods interconnect ONLY through the core groups above</text></svg>`;
+      <text x="${W/2}" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.pods} pod(s)${q.partial?` · ${q.lastShort}`:""} · pods meet ONLY through the core groups above</text></svg>`;
   }
 
   /* ---- Abstraction level 3 (3-tier only): one core group — spine #g of every pod → the group's core switches ---- */
@@ -2721,8 +2728,10 @@ const Exporter = {
     const pRow=slotRow(bom.ew.pods,4), pXs=xs(pRow.length,170,30), pY=176,pH=48;
     const realC=cRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell), realP=pRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell);
     let L="",B="",D="";
-    for(const p of realP) for(const c of realC) L+=`<line x1="${pXs[p.k]}" y1="${pY}" x2="${cXs[c.k]}" y2="${cY+cH}" stroke="var(--border)" stroke-width="2"/>`;
     const q=F3(bom), perSw=q.full.perCore; // equal integer links per pod per core switch (fold3)
+    { const W=[]; for(const p of realP) for(const c of realC){ const n=q.linksTo(p.s.i,c.s.i); if(!n) continue;
+        W.push({x1:pXs[p.k],y1:pY,x2:cXs[c.k],y2:cY+cH,c:"var(--rail3)",lab:`×${n}`,tt:`Pod ${p.s.i} · spine ${q.spineOf(p.s.i,g)} → core group ${g} · switch ${c.s.i}: ${n} × ${q.unit}`}); }
+      D+=Dwires(W); }
     cRow.forEach((s,k)=>{ if(s.ell){B+=ellip(cXs[k],cY+cH/2);return;}
       B+=`<rect x="${cXs[k]-75}" y="${cY}" width="150" height="${cH}" rx="6" fill="var(--card)" stroke="var(--rail3)" stroke-width="1.6"/><text x="${cXs[k]}" y="${cY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">group ${g} · switch ${s.i}</text><text x="${cXs[k]}" y="${cY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.coreDown}/${q.R} ports used</text>`;});
     B+=`<text x="890" y="${cY+14}" text-anchor="end" fill="var(--muted)" font-size="10">${bom.ew.coreGroupSize.toLocaleString()} switches = group ${g}</text><text x="890" y="${cY+28}" text-anchor="end" fill="var(--muted)" font-size="10">one of ${bom.ew.coreGroups} groups</text>`;
@@ -2810,7 +2819,7 @@ const Exporter = {
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Core — ${F3(b).U} groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,F3(b).U,"Group","coregroup","var(--rail3)",`${sspp.toLocaleString()} sw this plane`,c.pl).svg;
       y+=66;
       for(const c of cols) s+=trunk(c.cx,y,y+26);
-      s+=Dclk("podcore","spine-to-core-group map",`<rect x="282" y="${y+3}" width="336" height="20" rx="10" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="292" y="${y+17}" fill="var(--brand)" font-size="9.5" font-weight="700">▸ spine #g → group #g map (per plane) · no diagonals</text>`);
+      s+=Dclk("podcore","spine-to-core-group map",`<rect x="282" y="${y+3}" width="336" height="20" rx="10" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="292" y="${y+17}" fill="var(--brand)" font-size="9.5" font-weight="700">▸ pod spines ↔ core groups · wiring (per plane)</text>`);
       y+=26;
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${sw}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · ${F3(b).full.down}↓/${F3(b).full.up}↑`,c.pl).svg;
       y+=66;
@@ -2852,7 +2861,7 @@ const Exporter = {
     if(t3){
       s+=Dtier(450,760,y,`Super-spine tier — ${F3(b).U} core groups × ${ew.coreGroupSize.toLocaleString()}× ${sw}`,F3(b).U,"Group","coregroup","var(--rail3)",`${ew.sspine.toLocaleString()} switches total`).svg;
       y+=66; s+=Dtrunk(y,y+26);
-      s+=Dclk("podcore","spine-to-core-group map",`<rect x="470" y="${y+2}" width="340" height="22" rx="11" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="480" y="${y+17}" fill="var(--brand)" font-size="10" font-weight="700">▸ spine #g → group #g map · ${ew.linksSC.toLocaleString()}×${ew.ssLinkG}G, no diagonals</text>`);
+      s+=Dclk("podcore","spine-to-core-group map",`<rect x="470" y="${y+2}" width="340" height="22" rx="11" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="480" y="${y+17}" fill="var(--brand)" font-size="10" font-weight="700">▸ pod spines ↔ core groups · ${ew.linksSC.toLocaleString()}×${ew.ssLinkG}G wiring</text>`);
       y+=26;
     }
     if(!rtx){
@@ -2965,7 +2974,11 @@ const Exporter = {
     let s="";
     for(const l of realL){ if(!ew.rtx) s+=`<line x1="${lXs[l.k]}" y1="${lY}" x2="${lXs[l.k]}" y2="${lY-22}" stroke="var(--muted)" stroke-width="2.2"/><polygon points="${lXs[l.k]-4},${lY-20} ${lXs[l.k]+4},${lY-20} ${lXs[l.k]},${lY-28}" fill="var(--muted)"/>`;}
     if(ew.rtx&&realL.length===2) s+=`<line x1="${lXs[realL[0].k]+80}" y1="${lY+lH/2}" x2="${lXs[realL[1].k]-80}" y2="${lY+lH/2}" stroke="var(--rail3)" stroke-width="2.4"/><text x="450" y="${lY+lH/2-7}" text-anchor="middle" fill="var(--rail3)" font-weight="700">800G ISL</text>`;
-    for(const su of realS) for(const l of realL) s+=`<line x1="${sXs[su.k]}" y1="${sY}" x2="${lXs[l.k]}" y2="${lY+lH}" stroke="${railC4[(l.s.i-1)%4]}" stroke-width="1.6" opacity="0.85"/>`;
+    { const W=[], pp=Math.max(1,Math.round(ew.hostLinks/b.input.nodes/ew.planes/lpb)), spd=ew.xdr?"800G XDR":isIB?"400G NDR":`${ew.railSpeed}G`;
+      for(const su of realS){ const sn=su0+su.s.i, have=Math.max(0,Math.min(per,b.input.nodes-(sn-1)*per));
+        for(const l of realL) W.push({x1:sXs[su.k],y1:sY,x2:lXs[l.k],y2:lY+lH,c:railC4[(l.s.i-1)%4],lab:`×${have*pp}`,
+          tt:`SU ${sn} (${have} hosts) → ${pln?pln+"-":""}leaf ${(g0+l.s.i).toLocaleString()}: ${have} hosts × ${pp} port(s) = ${have*pp} × ${spd}`}); }
+      s+=Dwires(W); }
     const lu=DleafUp(b,g0+1);
     s+=`<text x="12" y="${lY-12}" fill="var(--muted)" font-size="10">${ew.rtx?"":`↑ ${lu?`${lu.up} uplinks per leaf (${lu.k} to each of ${lu.S} spines)`:"32 up-cages per leaf"} → spine tier${pln?` of plane ${pln}`:""}`}</text>`;
     lRow.forEach((o,k)=>{ if(o.ell){s+=Dell(lXs[k],lY+lH/2);return;}
@@ -2993,13 +3006,16 @@ const Exporter = {
       const tRow=DslotAt(sg,j), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
       const bRow=Dslot(ew.blocks,4), bXs=Dxs(bRow.length,170,26), bY=190;
       let s="";
-      for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell))
-        s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--border)" stroke-width="2"/>`;
+      const W=[], kl=ew.sg?ew.sg.kLast:sgk;
+      for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)){
+        const n=bb.o.i===ew.blocks?kl:sgk;
+        W.push({x1:bXs[bb.k],y1:bY,x2:tXs[t.k],y2:tY+44,c:"var(--rail1)",lab:`×${n}`,tt:`Block ${bb.o.i} rail-${rail} leaf → SG-${rail} spine ${t.o.i}: ${n} × 800G`}); }
       tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
         if(o.i===j) s+=hi(tXs[k]-tW/2,tY,tW,44);
         s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">SG-${rail} spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${ew.blocks*sgk}/64 down-cages</text>`;});
       bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+24);return;}
         s+=Dbox(bXs[k]-85,bY,170,48,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">block ${o.i} — rail-${rail} leaf</text><text x="${bXs[k]}" y="${bY+36}" text-anchor="middle" fill="var(--muted)" font-size="10">${sgk} up-cage(s) to each SG spine</text>`;});
+      s+=Dwires(W);
       return Dsvg(bY+48+58,`Spine ${si} — inside spine group SG-${rail}`,s,
         `spine ${si} = member ${j} of SG-${rail} (rail ${rail}, one of ${ew.railsPerPlane} SGs/plane × ${sg}) · the rail-${rail} leaf of EVERY block sends ${sgk} up-cage(s) to each of the ${sg} SG spines`,
         `SG spine: ${ew.blocks} rail-leaves × ${sgk} = ${ew.blocks*sgk} of 64 down-cages · pattern per DGX SuperPOD B300 Table 3`);
@@ -3010,13 +3026,16 @@ const Exporter = {
     const tRow=DslotAt(spp,si), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
     const bRow=Dslot(lpp,4), bXs=Dxs(bRow.length,160,30), bY=190;
     let s="";
-    for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell))
-      s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--border)" stroke-width="2"/>`;
+    const W=[], spd=ew.xdr?"800G XDR":ew.proto==="ib"?"400G NDR":"800G";
+    for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)){
+      const u=DleafUp(b,bb.o.i); if(!u) continue;
+      W.push({x1:bXs[bb.k],y1:bY,x2:tXs[t.k],y2:tY+44,c:"var(--rail1)",lab:`×${u.k}`,tt:`${pln?pln+"-":""}leaf ${bb.o.i} → ${pln?pln+"-":""}spine ${t.o.i}: ${u.k} × ${spd}`}); }
     tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
       if(o.i===si) s+=hi(tXs[k]-tW/2,tY,tW,44);
       s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${st?`${st.spineDown}/${RR} down-ports`:"no striping plan"}</text>`;});
     bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
       s+=Dbox(bXs[k]-80,bY,160,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${(()=>{const u=DleafUp(b,o.i);return u?`${u.up} uplinks · ${u.k} per spine`:"—";})()}</text>`;});
+    s+=Dwires(W);
     return Dsvg(bY+46+58,`Spine ${si}${pln?` (plane ${pln})`:""} in the flat 2-tier spread`,s,
       `spine ${si} (highlighted) takes ${per} uplink${per==="1"?"":"s"} from EVERY leaf${pln?` of plane ${pln} — plane ${pln==="A"?"B":"A"} is an independent copy`:""} — identical role across all ${spp} spines`,
       st?`even striping: ${spp} spines (even) · every leaf sends the same whole number of uplinks to each spine · ${st.spineDown}/${RR} spine ports used · ${lpp} leaves ≤ ${RR}`:`NO STRIPING PLAN — this view cannot be drawn truthfully (port audit failed; see flags)`);
@@ -3087,14 +3106,17 @@ const Exporter = {
     let s=Dbox(130,tY,640,46,"var(--rail1)",true)
       +`<text x="450" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Its leaf block — block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} (${ew.leavesPerBlock*ew.planes} rail leaves${ew.planes===2?", planes A+B":""}) <tspan fill="var(--muted)" font-weight="400">(reference)</tspan></text>`
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">expand “Leaf switch tier” in the overview for the inside of this block</text>`;
-    const hRow=Dslot(su.n,4), hXs=Dxs(hRow.length,176,22);
+    const hRow=Dslot(su.n,4), hXs=Dxs(hRow.length,176,22), SW=[];
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
       const hn=first+o.i, pl=hn>b.input.nodes, dz=pl?' stroke-dasharray="3 4"':'';
       for(let r=0;r<legs;r++){const off=(r-(legs-1)/2);
         s+=`<line x1="${hXs[k]+off*9}" y1="${hY}" x2="${450+off*26}" y2="${tY+46}" stroke="${pl?"var(--muted)":railC4[r%4]}" stroke-width="1.5" opacity="0.85"${dz}/>`;}
+      if(!pl){ const per=ew.hostLinks/b.input.nodes, spd=ew.xdr?"800G XDR":ew.proto==="ib"?"400G NDR":`${ew.railSpeed}G`;
+        SW.push({x1:hXs[k],y1:hY,x2:450,y2:tY+46,c:"var(--rail1)",op:0,lab:`×${per}`,tt:`Host ${hn.toLocaleString()} → its ${ew.leavesPerBlock*ew.planes} rail leaves: ${per} × ${spd} (one per rail${ew.planes===2?", both planes":""})`}); }
       s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
         +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
         +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${b.input.ewnicn}× ${b.input.ewnic} — ${ew.planes===2?`${ew.railsPerPlane}+${ew.railsPerPlane} rails`:`${DrailsInfo(b).rails} rails${DrailsInfo(b).dbl?" ·2 ports ea":""}`}`}</text>`;});
+    s+=Dwires(SW,{t:0.3});
     const totRails=ew.railsPerPlane*ew.planes, rpg=totRails/b.input.gph, riS=DrailsInfo(b);
     return Dsvg(hY+hH+58,`Inside SU ${si} — E-W attach`,s,
       `each host: ${riS.dbl?`one rail per GPU — 2× ${ew.railSpeed}G ports each (${b.input.gph} rails; single-plane deviation)`:rpg>1?`${rpg}× ${ew.railSpeed}G rails per GPU${ew.planes===2&&rpg===2?" (twin-planar — one per plane)":""}`:(rpg===1?`one ${ew.railSpeed}G rail per GPU`:`one ${ew.railSpeed}G rail per ${b.input.gph/totRails} GPUs`)} · rail k of every host lands on the leaf serving rail k${ew.planes===2?" · rails split across planes A/B":""}`,
@@ -3139,26 +3161,58 @@ const Exporter = {
   }
 
   /* One pod's 32 spines fanning to the 32 core groups — the spine s ↔ group s one-to-one map. */
-  function podCoreSVG(b){
-    const ew=b.ew, gY=40,gH=48, sY=210,sH=48, q=F3(b);
-    const row=Dslot(q.U,4), xsA=Dxs(row.length,150,40);   // same x for both rows → straight vertical bundles
-    let s="";
-    /* pod frame around the spine row */
-    s+=`<rect x="${xsA[0]-85}" y="${sY-26}" width="${xsA[xsA.length-1]+85-(xsA[0]-85)}" height="${sH+36}" rx="10" fill="none" stroke="var(--fg)" stroke-width="1.3" stroke-dasharray="6 5"/>`
-      +`<text x="${xsA[0]-78}" y="${sY-10}" fill="var(--fg)" font-weight="700" font-size="10" letter-spacing="1">ONE POD (any of ${ew.pods})</text>`;
-    row.forEach((o,k)=>{
-      if(o.ell){ s+=Dell(xsA[k],gY+gH/2)+Dell(xsA[k],sY+sH/2)+Dell(xsA[k],(gY+gH+sY)/2); return; }
-      const c=railC4[k%4];
-      for(const off of [-8,0,8]) s+=`<line x1="${xsA[k]+off}" y1="${sY}" x2="${xsA[k]+off}" y2="${gY+gH}" stroke="${c}" stroke-width="2.4" opacity="0.85"/>`;
-      s+=`<text x="${xsA[k]+16}" y="${(gY+gH+sY)/2+4}" fill="${c}" font-size="9.5" font-weight="600">${q.full.perGroup}×${q.unit}</text>`;
-      s+=Dbox(xsA[k]-75,gY,150,gH,c)+`<text x="${xsA[k]}" y="${gY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">Core group ${o.i}</text><text x="${xsA[k]}" y="${gY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">${ew.coreGroupSize.toLocaleString()}× switches</text>`;
-      s+=Dbox(xsA[k]-75,sY,150,sH,c)+`<text x="${xsA[k]}" y="${sY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${o.i}</text><text x="${xsA[k]}" y="${sY+37}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.up} uplinks → group ${o.i} only</text>`;
-      s+=`<circle cx="${xsA[k]}" cy="${sY}" r="3.4" fill="${c}"/><circle cx="${xsA[k]}" cy="${gY+gH}" r="3.4" fill="${c}"/>`;});
-    return Dsvg(sY+sH+68,"One pod's spines mapped one-to-one onto the core groups",s,
-      `one-to-one, no diagonals: spine s never reaches group t≠s — every pod repeats this identical map, so group s holds spine s of ALL ${ew.pods} pods`,
-      `pod northbound = ${q.U} bundles × ${q.full.perGroup}×${q.unit} = pod host bandwidth (1:1)${q.partial?` · ${q.lastNote}`:""} · each bundle fans 1 link per group switch${ew.planes===2?" · identical in planes A and B":""}`);
+  /* ---- Labeled wiring (every expanded view): each line carries a badge with its PHYSICAL link count,
+     placed along the line near its lower end and slid along it until it overlaps no other badge;
+     every line and badge carries a full "A → B: n × speed" tooltip. ---- */
+  function Dwires(ws,o={}){
+    let L="",B=""; const placed=[], H=15;
+    for(const w of ws) L+=`<line x1="${w.x1}" y1="${w.y1}" x2="${w.x2}" y2="${w.y2}" stroke="${w.c}" stroke-width="${w.sw||1.5}" opacity="${w.op||0.85}"${w.dash?' stroke-dasharray="4 4"':''}><title>${w.tt||""}</title></line>`;
+    for(const w of ws){ if(!w.lab) continue;
+      const bw=12+String(w.lab).length*5.6; let t=o.t??0.24, x=0, y=0, ok=false;
+      for(let k=0;k<24&&!ok;k++){
+        x=w.x1+(w.x2-w.x1)*t; y=w.y1+(w.y2-w.y1)*t;
+        ok=!placed.some(p=>Math.abs(p.x-x)<(p.w+bw)/2+3&&Math.abs(p.y-y)<H+2);
+        if(!ok){ t+=0.06; if(t>0.82) t=0.1+0.017*k; } }
+      placed.push({x,y,w:bw});
+      B+=`<g><title>${w.tt||""}</title><rect x="${(x-bw/2).toFixed(1)}" y="${(y-H/2).toFixed(1)}" width="${bw.toFixed(1)}" height="${H}" rx="${H/2}" fill="var(--card)" stroke="${w.c}" stroke-width="1.1"/><text x="${x.toFixed(1)}" y="${(y+3.6).toFixed(1)}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${w.c}">${w.lab}</text></g>`; }
+    return L+B;
   }
+  /* index slots: all when ≤ max, else 1, 2, ⋯, last */
+  const Dpick=(n,max=3)=>n<=max?Array.from({length:n},(_,k)=>k+1):[1,2,n];
 
+  /* ---- Pods ↔ core groups: one column per core group (1, 2, ⋯, last). Top: the group's core switches
+     (1, 2, ⋯, G); bottom: the spine that feeds this group in pods 1, 2, ⋯, P. EVERY drawn spine is wired to
+     EVERY drawn switch it really connects to, each line labeled with its physical link count. ---- */
+  function podCoreSVG(b){
+    const ew=b.ew, q=F3(b), f=q.f, P=ew.pods, U=q.U, G=q.G, unit=q.unit;
+    const groups=Dpick(U), pods=Dpick(P), sws=Dpick(G);
+    const colX=groups.length===3?[150,420,750]:groups.map((_,k)=>450+(k-(groups.length-1)/2)*290);
+    const off=n=>n.length===3?[-90,-22,90]:n.length===2?[-50,50]:[0];
+    const gY=34, gH=96, sY=318, sH=78, bw=58;
+    const spineOf=(p,g)=>{ const x=(q.partial&&p===P)?q.last:q.full; return Math.ceil(g/(U/x.Sp)); };
+    const linksTo=(p,s)=>{ const x=(q.partial&&p===P)?q.last:q.full; if(x.touch<G) return s<=x.touch?1:0; return x.perCore; };
+    let s="", W=[];
+    if(groups.length===3) s+=Dell(585,gY+gH/2)+Dell(585,sY+sH/2)+Dell(585,(gY+gH+sY)/2);
+    groups.forEach((g,ci)=>{
+      const cx=colX[ci], c=railC4[ci%4], sx=off(sws).map(d=>cx+d), px=off(pods).map(d=>cx+d);
+      s+=`<rect x="${cx-128}" y="${gY}" width="256" height="${gH}" rx="10" fill="none" stroke="${c}" stroke-width="1.5"/>`
+        +`<text x="${cx}" y="${gY+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">Core group ${g}</text><text x="${cx}" y="${gY+31}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G} switches · ${q.coreDown}/${q.R} ports each</text>`;
+      sws.forEach((sw,k)=>{ s+=Dbox(sx[k]-bw/2,gY+44,bw,40,c)+`<text x="${sx[k]}" y="${gY+61}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">G${g}·SW${sw}</text><text x="${sx[k]}" y="${gY+75}" text-anchor="middle" fill="var(--muted)" font-size="9">switch ${sw}</text>`;
+        if(sws.length===3&&k===1&&sws[2]>3) s+=`<text x="${(sx[1]+sx[2])/2}" y="${gY+68}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`; });
+      s+=`<rect x="${cx-128}" y="${sY}" width="256" height="${sH}" rx="10" fill="none" stroke="var(--fg)" stroke-width="1.2" stroke-dasharray="5 4"/>`
+        +`<text x="${cx}" y="${sY+sH+15}" text-anchor="middle" fill="var(--muted)" font-size="9.5">the spine feeding group ${g}, in every pod</text>`;
+      pods.forEach((p,k)=>{ const si=spineOf(p,g);
+        s+=Dbox(px[k]-bw/2,sY+10,bw,48,"var(--muted)",q.partial&&p===P)+`<text x="${px[k]}" y="${sY+29}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">Pod ${p}</text><text x="${px[k]}" y="${sY+44}" text-anchor="middle" fill="var(--muted)" font-size="9.5">spine ${si}</text>`;
+        if(pods.length===3&&k===1&&pods[2]>3) s+=`<text x="${(px[1]+px[2])/2}" y="${sY+38}" text-anchor="middle" fill="var(--muted)" font-weight="700">⋯</text>`;
+        sws.forEach((sw,j)=>{ const n=linksTo(p,sw); if(!n) return;
+          W.push({x1:px[k],y1:sY+10,x2:sx[j],y2:gY+84,c,lab:`×${n}`,tt:`Pod ${p} · spine ${si} → core group ${g} · switch ${sw}: ${n} × ${unit}`}); }); });
+    });
+    s+=Dwires(W);
+    const fl=q.full;
+    return Dsvg(sY+sH+64,"Pod spines wired to core-group switches, with physical link counts",s,
+      `pod p · spine g → every switch of core group g: ×${fl.perCore} ${unit} each = ${fl.up} uplinks per pod spine · never to another group`,
+      `${P} pods × ${U} groups${ew.planes===2?" · planes A and B identical":""} · core switch ${q.coreDown}/${q.R} ports${q.partial?` · last pod: ${q.last.touch<G?`1 link to ${q.last.touch} of ${G} switches per group`:`×${q.last.perCore} per switch`}`:""}`);
+  }
   /* One pod spine (3-tier): 32 down to ITS pod's leaves · 32 up to core group = its own index. */
   function podSpineSVG(b,si,pln){
     const q=F3(b); si=Math.max(1,Math.min(si||1,q.full.Sp));
@@ -3167,17 +3221,18 @@ const Exporter = {
     const gY=26,gH=40, pY=168,pH=50, lY=300,lH=40;
     const gRow=Dslot(S,3), gXs=Dxs(gRow.length,160,40);
     const lRow=Dslot(q.full.L,4), lXs=Dxs(lRow.length,150,28);
-    let s="";
+    let s=""; const W=[];
     gRow.forEach((o,k)=>{ if(o.ell){s+=Dell(gXs[k],gY+gH/2);return;}
-      s+=`<line x1="450" y1="${pY}" x2="${gXs[k]}" y2="${gY+gH}" stroke="var(--rail3)" stroke-width="2" opacity="0.9"/>`;
+      W.push({x1:450,y1:pY,x2:gXs[k],y2:gY+gH,c:"var(--rail3)",sw:2,lab:`×${stripe}`,tt:`Pod spine ${si} → core group ${si} · switch ${o.i}: ${stripe} × ${q.unit}`});
       s+=Dbox(gXs[k]-80,gY,160,gH,"var(--rail3)")+`<text x="${gXs[k]}" y="${gY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">group ${si} · switch ${o.i}</text><text x="${gXs[k]}" y="${gY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${stripe} link(s) from this spine</text>`;});
     s+=`<text x="450" y="${gY+gH+34}" text-anchor="middle" fill="var(--rail3)" font-size="10" font-weight="600">${q.full.up} uplinks → core group ${si} ONLY (${stripe}/switch × ${S}) — never group t≠${si}</text>`;
     s+=Dbox(340,pY,220,pH,"var(--brand)")+`<text x="450" y="${pY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod spine ${si}</text><text x="450" y="${pY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.ewSwitch.id} · ${q.full.down}↓ / ${q.full.up}↑ of ${q.R}</text>`;
     lRow.forEach((o,k)=>{ if(o.ell){s+=Dell(lXs[k],lY+lH/2);return;}
-      s+=`<line x1="${lXs[k]}" y1="${lY}" x2="450" y2="${pY+pH}" stroke="var(--rail1)" stroke-width="1.5" opacity="0.85"/>`;
+      W.push({x1:lXs[k],y1:lY,x2:450,y2:pY+pH,c:"var(--rail1)",lab:`×${q.full.k}`,tt:`Pod leaf ${o.i} → pod spine ${si}: ${q.full.k} × ${q.unit}`});
       s+=Dbox(lXs[k]-70,lY,140,lH,"var(--rail1)")+`<text x="${lXs[k]}" y="${lY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">pod leaf ${o.i}</text><text x="${lXs[k]}" y="${lY+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${q.full.k}×${q.unit} to this spine</text>`;});
+    s+=Dwires(W,{t:0.3});
     return Dsvg(lY+lH+58,`Pod spine ${si}${pln?` (plane ${pln})`:""} connectivity`,s,
-      `spine ${si} wires IDENTICALLY in every pod${pln?` — shown in plane ${pln}; plane ${pln==="A"?"B":"A"} is an independent copy`:""}: ${q.full.k} link(s) from each of its pod's ${q.full.L} leaves · ${q.full.up} uplinks to group ${si}${q.partial?` · ${q.lastNote}`:""}`,
+      `spine ${si} wires IDENTICALLY in every pod${pln?` — shown in plane ${pln}; plane ${pln==="A"?"B":"A"} is an independent copy`:""}: ${q.full.k} link(s) from each of its pod's ${q.full.L} leaves · ${q.full.up} uplinks to group ${si}${q.partial?` · ${q.lastShort}`:""}`,
       `spine index = core group index: this is what keeps the ${ew.coreGroups} groups as independent parallel paths (1:1 end to end)`);
   }
 
@@ -3207,13 +3262,17 @@ const Exporter = {
     const tRow=DslotAt(ns.spine,si), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
     const bRow=Dslot(ns.leaf,4), bXs=Dxs(bRow.length,160,30), bY=190;
     let s="";
+    const nk = ns.nsStripe ? ns.nsStripe.groups[0].k : ns.nsFold ? ns.nsFold.podInfo[0].k
+             : (()=>{ const v=(ns.pISL/2)/(ns.leaf*ns.spine); return Number.isInteger(v)?v:null; })();
+    const W=[];
     for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell))
-      s+=`<line x1="${bXs[bb.k]}" y1="${bY}" x2="${tXs[t.k]}" y2="${tY+44}" stroke="var(--ok)" stroke-width="1.6" opacity="0.8"/>`;
+      W.push({x1:bXs[bb.k],y1:bY,x2:tXs[t.k],y2:tY+44,c:"var(--ok)",lab:nk?`×${nk}`:"",tt:`N-S leaf ${bb.o.i} → N-S spine ${t.o.i}: ${nk?`${nk} × 800G`:"per the RA table allocation"}`});
     tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
       if(o.i===si) s+=`<rect x="${tXs[k]-tW/2-3}" y="${tY-3}" width="${tW+6}" height="50" rx="8" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`;
       s+=Dbox(tXs[k]-tW/2,tY,tW,44,"var(--ok)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S spine ${o.i}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${sw} · 64×800G</text>`;});
     bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
       s+=Dbox(bXs[k]-80,bY,160,46,"var(--ok)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S leaf ${o.i}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${ns.sspine?"uplinks to its pod's spines":"uplinks to every spine"}</text>`;});
+    s+=Dwires(W);
     return Dsvg(bY+46+58,`N-S spine ${si} detail`,s,
       ns.sspine?`pod spine ${si} (highlighted) takes ${ns.nsFold.podInfo[0].k} uplink(s) from every leaf of ITS pod (≤${ns.nsFold.podLeavesMax} leaves) and ${ns.nsFold.podInfo[0].up} up to its core group — pods meet only at the core`:`spine ${si} (highlighted) takes ${ns.nsStripe?ns.nsStripe.groups[0].k:"an equal"} uplink(s) from EVERY N-S leaf — identical across all ${ns.spine.toLocaleString()} spines · 1:1 northbound`,
       (ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis));
@@ -3641,7 +3700,7 @@ const Exporter = {
       podspine:{t:(i,p)=>`Pod spine ${i||1}${p?` (plane ${p})`:""} — down to its pod's leaves · up to core group ${i||1}`,f:podSpineSVG},
       spine2t:{t:(i,p)=>`Spine ${i||1}${p?` (plane ${p})`:""} — leaf↔spine spread`,f:spine2tSVG},
       coregroup:{t:(i,p)=>`Inside core group ${i||1}${p?` (plane ${p})`:""} — spine #${i||1} of every pod ↔ its core switches`,f:coreGroupSVG},
-      podcore:{t:"One pod → the core groups (spine s ↔ group s, one-to-one)",f:podCoreSVG},
+      podcore:{t:"Pod spines ↔ core groups — every link, with link counts",f:podCoreSVG},
       nsleaf:{t:i=>b.ns.merged?"Converged N-S allocation (merged into E-W leaves)":`N-S leaf ${i||1} — its pair & node attach`,f:nsLeafSVG},
       nsspine:{t:i=>`N-S spine ${i||1} — leaf↔spine spread`,f:nsSpineSVG},
       stleaf:{t:i=>`Storage leaf ${i||1} (plane ${(i||1)%2?"A":"B"}) — dedicated tier`,f:stLeafSVG},
@@ -4138,7 +4197,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="69";
+  const APP_BUILD="70";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
