@@ -2347,27 +2347,51 @@ const Exporter = {
 
   /* Manual switch counts (Custom only): Auto shows the engine's sizing; Manual opens the totals,
      prefilled from the auto design so the user edits from a correct baseline */
+  /* the design-input rules Generate enforces — ONE function, used by Generate AND the Auto-count panel, so the panel
+     never shows sizing for a combination Generate would refuse */
+  function formError(){
+    const nodes=+$("nodes").value, gph=+$("gph").value;
+    if(!Number.isInteger(nodes)||nodes<1) return "Number of GPU hosts must be a whole number ≥ 1.";
+    if(nodes>CATALOG.rules.maxNodesApp) return `${nodes.toLocaleString()} hosts exceeds the app ceiling (${CATALOG.rules.maxNodesApp.toLocaleString()} hosts / 100,000 GPUs).`;
+    if(!Number.isInteger(gph)||gph<1) return "GPUs per host must be a whole number ≥ 1.";
+    const g2on = state.dmode==="custom" && $("g2on").checked;
+    if(g2on && state.ewproto==="ib") return "Mixed host groups are Ethernet-only in this version — switch the E-W protocol to Ethernet.";
+    if(g2on && !(+$("g2nodes").value>=1)) return "Host group 2 needs at least 1 GPU host.";
+    return null;
+  }
+  let autoErr=null;
   function autoCounts(){
+    autoErr=formError(); if(autoErr) return null;
     try{ const i=collectInput(); i.ewcountmode="auto"; i.nscountmode="auto"; i.growth=0; i.client=i.client||"x";
       if(!(i.nodes>=1)) return null; const b=buildBOM(i);
-      return {ew:{leaf:b.ew.leaf,spine:(b.ew.spine||0)+(b.ew.sspine||0),planes:b.ew.planes||1,sspine:b.ew.sspine||0},ns:{leaf:b.ns.merged?0:b.ns.leaf,spine:b.ns.merged?0:b.ns.spine,merged:!!b.ns.merged}};
-    }catch(_){ return null; } }
+      /* spine field = every switch above the leaf tier (spine/pod spine + core), exactly as the BOM lists them */
+      return {ew:{leaf:b.ew.leaf,spine:(b.ew.spine||0)+(b.ew.sspine||0),planes:b.ew.planes||1,sspine:b.ew.sspine||0},
+              ns:{leaf:b.ns.merged?0:b.ns.leaf,spine:b.ns.merged?0:(b.ns.spine||0)+(b.ns.sspine||0),sspine:b.ns.merged?0:(b.ns.sspine||0),merged:!!b.ns.merged}};
+    }catch(err){ autoErr=String(err.message||err); return null; } }
   function syncCounts(prefill){
     const custom=state.dmode==="custom", a=autoCounts();
     for(const f of ["ew","ns"]){
       $(f+"cnt-wrap").hidden=!custom;
       const man=custom&&state[f+"countmode"]==="manual";
       $(f+"leafn").disabled=!man; $(f+"spinen").disabled=!man;
-      if(a&&(!man||prefill===f)){ $(f+"leafn").value=a[f].leaf||(f==="ns"&&a.ns.merged?2:0); $(f+"spinen").value=a[f].spine; }
+      /* Auto: the fields show EXACTLY what the BOM will contain (merged N-S = 0 / 0); Manual prefill starts from a buildable pair */
+      if(a&&!man){ $(f+"leafn").value=a[f].leaf; $(f+"spinen").value=a[f].spine; }
+      else if(a&&prefill===f){ $(f+"leafn").value=a[f].leaf||(f==="ns"&&a.ns.merged?2:0); $(f+"spinen").value=a[f].spine; }
       const h=$(f+"cnt-help");
-      if(!a) h.textContent="";
+      if(!a){ h.textContent=autoErr?`No sizing — ${autoErr}`:""; if(!man){ $(f+"leafn").value=""; $(f+"spinen").value=""; } }
       else if(f==="ew") h.textContent=man?`Engine sizing: ${a.ew.leaf} leaf + ${a.ew.spine} spine${a.ew.sspine?` (incl. ${a.ew.sspine} core)`:""}${a.ew.planes>1?` over ${a.ew.planes} planes`:""}. Your totals are rebuilt into links/optics and checked: host ports, 1:1, even counts, plane split, rail alignment, radix.`:`Auto: ${a.ew.leaf} leaf + ${a.ew.spine} spine (engine sizing).`;
-      else h.textContent=man?`Engine sizing: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`}. Your totals are checked for port capacity, pairs, 1:1 and radix.`:`Auto: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`}.`;
+      else h.textContent=man?`Engine sizing: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`}. Your totals are checked for port capacity, pairs, 1:1 and radix.`:`Auto: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine${a.ns.sspine?` (incl. ${a.ns.sspine} core)`:""}`}.`;
     }
   }
   seg("ewcountmode",v=>syncCounts(v==="manual"?"ew":null)); seg("nscountmode",v=>syncCounts(v==="manual"?"ns":null));
-  ["nodes","gph","gpu","server","ewnic","ewnicn","nsnic","nsnicn","ewswitch","nsswitch"].forEach(id=>{ const el=$(id); if(el) el.addEventListener("change",()=>syncCounts(false)); });
-  ["ewproto","planes","ewswmode","nsswmode","nsmode","stmode"].forEach(id=>$(id).addEventListener("click",()=>setTimeout(()=>syncCounts(false),0)));
+  /* ANY form change re-derives the Auto counts from the same engine call that builds the BOM (debounced so
+     programmatic follow-ups — host-group-2 prefill, switch-model lists — land first). Previously only a fixed list
+     of fields triggered it, so group-2 / OEM / typed host-count changes left stale counts on screen. */
+  let syncT=null;
+  const countCtl=t=>t&&t.closest&&t.closest("#ewcnt-wrap,#nscnt-wrap");
+  ["input","change","click"].forEach(ev=>$("reqform").addEventListener(ev,e=>{
+    if(countCtl(e.target)) return;
+    clearTimeout(syncT); syncT=setTimeout(()=>syncCounts(false),120); }));
   seg("ewswmode",()=>fillSwitchSelects()); seg("nsswmode",()=>fillSwitchSelects()); seg("stswmode",()=>fillSwitchSelects()); seg("oobswmode",()=>fillSwitchSelects());
   /* Section include switches: off = inputs inert + section fully ignored by the engine */
   [["inc-ew","sec-ew"],["inc-ns","sec-ns"],["inc-st","sec-st"],["inc-oob","sec-oob"]].forEach(([cb,sec])=>{
@@ -4263,15 +4287,9 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
 
   $("reqform").addEventListener("submit",e=>{
     e.preventDefault();
-    const nodes=+$("nodes").value, gph=+$("gph").value, ewnicn=+$("ewnicn").value;
-    if(!Number.isInteger(nodes)||nodes<1){toast("Number of GPU hosts must be a whole number ≥ 1.");return;}
-    if(nodes>CATALOG.rules.maxNodesApp){toast(`${nodes.toLocaleString()} hosts exceeds the app ceiling (${CATALOG.rules.maxNodesApp.toLocaleString()} hosts / 100,000 GPUs).`);return;}
-    if(!Number.isInteger(gph)||gph<1){toast("GPUs per host must be a whole number ≥ 1.");return;}
+    const fe=formError(); if(fe){ toast(fe); return; }
     const client=$("client").value.trim();
     if(!client){toast("Client is required — enter the customer / project name in section 1.");$("client").focus();return;}
-    const g2on = state.dmode==="custom" && $("g2on").checked;
-    if(g2on && state.ewproto==="ib"){ toast("Mixed host groups are Ethernet-only in this version — switch the E-W protocol to Ethernet."); return; }
-    if(g2on && !(+$("g2nodes").value>=1)){ toast("Host group 2 needs at least 1 GPU host."); return; }
     if(state.dmode==="custom"){
       for(const [f,n] of [["ew","E-W"],["ns","N-S"]]) if(state[f+"countmode"]==="manual"){
         const L=+$(f+"leafn").value, S=+$(f+"spinen").value;
@@ -4280,12 +4298,12 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
       }
     }
     const input=collectInput();
-    try{ const bom=buildBOM(input); render(bom); SAVED.put(input,bom); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
+    try{ const bom=buildBOM(input); render(bom); SAVED.put(input,bom); syncCounts(false); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
     catch(err){ toast("Generation error: "+err.message); console.error(err); }
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="72";
+  const APP_BUILD="73";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
