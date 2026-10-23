@@ -825,6 +825,43 @@ const Engine = (() => {
     return elig[0];
   }
 
+  /** MIXED HOST GROUPS — deterministic rail-aligned layout on a shared 2-tier fabric (no RA covers mixed groups,
+      so this is the app's defined, radix-exact pattern — flagged as such):
+      • each group is cut into blocks of B hosts (B = 16 cages' worth: 32 hosts @400G, 64 @200G, 16 @800G);
+      • a "rail unit" = (group, block, rail r) = rail r of every host in that block — it always lands on ONE leaf
+        (rail alignment: port r of every host of a block meets on the same switch);
+      • units are dealt round-robin across L leaves (group 1 first, then group 2); L = smallest even count for which
+        no leaf exceeds 32 host-facing 800G cages (cages never mix groups or blocks);
+      • every leaf runs 1:1 (up = down) and stripes its uplinks evenly over the spines (evenStripe). */
+  function mixedLayout(groups){
+    const units=[];
+    for(const G of groups){ const B=Math.max(1,Math.floor(16*800/G.sp)), nb=ceil(G.nodes/B);
+      for(let k=0;k<nb;k++){ const h0=k*B+1, h1=Math.min(G.nodes,(k+1)*B), hosts=h1-h0+1;
+        for(let r=1;r<=G.rails;r++) units.push({g:G.g,block:k+1,blocks:nb,h0,h1,hosts,rail:r,sp:G.sp,bw:hosts*G.sp}); } }
+    /* leaf cages: legs of the SAME group on the same leaf share twin-port cages (2×400G / 4×200G per 800G cage) */
+    const cagesOf=us=>{ const g={}; for(const u of us) g[u.g]=(g[u.g]||0)+u.bw; return Object.values(g).reduce((a,bw)=>a+ceil(bw/800),0); };
+    const totBW=units.reduce((a,u)=>a+u.bw,0);
+    const order=units.map((u,i)=>i).sort((a,b)=>units[b].bw-units[a].bw||a-b);   /* largest units first, stable */
+    for(let L=Math.max(2,2*ceil(totBW/800/64)); L<=64; L+=2){
+      /* balanced, deterministic placement: each unit → the least-loaded leaf that keeps it ≤ 32 cages */
+      const bucket=Array.from({length:L},()=>[]); let fit=true;
+      for(const i of order){ let best=-1, bl=1e18;
+        for(let j=0;j<L;j++){ const c=cagesOf([...bucket[j],units[i]]); if(c<=32){ const load=bucket[j].reduce((a,u)=>a+u.bw,0); if(load<bl){ bl=load; best=j; } } }
+        if(best<0){ fit=false; break; } bucket[best].push(units[i]); units[i].leaf=best+1; }
+      if(!fit) continue;
+      const down=bucket.map(cagesOf);
+      /* 1:1 uplinks per leaf, striped evenly: leaves grouped by their up count */
+      const byUp={}; down.forEach(d=>{ byUp[d]=(byUp[d]||0)+1; });
+      let st=evenStripe(Object.entries(byUp).map(([u,n])=>({leaves:n,up:+u})));
+      if(!st) st=evenStripe([{leaves:L,up:Math.max(...down)}]);      /* uniform fallback: every leaf at the max (≥1:1) */
+      if(!st) continue;
+      const kOf=d=>{ const g=st.groups.find(x=>x.up===d); return g?g.k:st.groups[0].k; };
+      const leaves=down.map((d,i)=>({leaf:i+1,down:d,k:kOf(d),up:kOf(d)*st.S,units:units.filter(u=>u.leaf===i+1).sort((a,b)=>a.g-b.g||a.block-b.block||a.rail-b.rail)}));
+      return {ok:true,L,units,leaves,stripe:st,downCages:down.reduce((a,b)=>a+b,0)};
+    }
+    return {ok:false,why:`the two host groups need more than 64 shared leaves (${ceil(totBW/800).toLocaleString()} host-facing 800G cages) — beyond a 2-tier shared fabric; split the groups into separate fabrics`};
+  }
+
   /** Core E-W sizing on 64×800G-cage switches. Radix truth: a leaf splits 32 cages down / 32 up,
       so a flat 2-tier fabric is only buildable while leaves/plane ≤ 64 (spine down-radix) AND
       spines/plane ≤ 32 (leaf up-radix spread). Beyond that: 3-tier folded Clos — pods of
@@ -1237,7 +1274,18 @@ const Engine = (() => {
     const R = xdr?144:64, Uh=R/2;                       // radix in the fabric's link unit (800G cage / 400G NDR port / 800G XDR port)
     const chk=(c,m)=>{ if(!c) v.push(m); };
     if(ew.infeasible) return [ew.infeasible];
-    if(ew.mixed){ chk(ew.mg.links800<=ew.spine*R, `spines: ${ew.mg.links800} links > ${ew.spine}×${R} ports`); chk(ew.mg.links800<=ew.leaf*Uh, `leaves: ${ew.mg.links800} uplinks > ${ew.leaf}×${Uh}`); return v; }
+    if(ew.mixed){
+      if(ew.manual){ chk(ew.mg.links800<=ew.spine*R, `spines: ${ew.mg.links800} links > ${ew.spine}×${R} ports`); return v; }
+      const lay=ew.mg.layout; if(!lay||!lay.ok){ v.push("mixed fabric without a layout"); return v; }
+      chk(lay.L===ew.leaf&&lay.stripe.S===ew.spine, "mixed layout ≠ switch counts");
+      for(const lf of lay.leaves){ chk(lf.down<=Uh, `leaf ${lf.leaf}: ${lf.down} host cages > ${Uh}`); chk(lf.up>=lf.down&&lf.up<=Uh, `leaf ${lf.leaf}: up ${lf.up} vs down ${lf.down}`);
+        const g={}; for(const u of lf.units) g[u.g]=(g[u.g]||0)+u.hosts*u.sp;
+        chk(lf.down===Object.values(g).reduce((a,bw)=>a+Math.ceil(bw/800),0), `leaf ${lf.leaf}: cage count ≠ its rail units`); }
+      chk(lay.stripe.spineDown<=R, `spine down ${lay.stripe.spineDown} > ${R}`);
+      chk(lay.leaves.reduce((a,l)=>a+l.up,0)*1===ew.links800, "Σ leaf uplinks ≠ leaf↔spine links");
+      /* rail alignment: every (group, block, rail) unit sits on exactly one leaf */
+      chk(new Set(lay.units.map(u=>`${u.g}|${u.block}|${u.rail}`)).size===lay.units.length, "a rail unit is split across leaves");
+      return v; }
     if(ew.manual) return v;                              // manual designs carry their own rule flags
     const lp=ew.leaf/P, sp=ew.spine/P;
     chk(Number.isInteger(lp)&&Number.isInteger(sp), `counts don't split evenly across ${P} planes`);
@@ -1290,13 +1338,15 @@ const Engine = (() => {
     chk(ns.leaf%2===0||ns.leaf===1, `odd N-S leaf count ${ns.leaf}`);
     if(ns.nsStripe){ const st=ns.nsStripe; chk(st.S===ns.spine, "N-S stripe ≠ spines"); chk(st.spineDown<=64, `N-S spine down ${st.spineDown} > 64`);
       for(const g of st.groups) chk(Number.isInteger(g.k)&&g.k*st.S<=32&&g.k*st.S>=g.up, `N-S leaf uplinks ${g.k}×${st.S} vs ${g.up}`);
-      chk(ns.leaf<=64, `${ns.leaf} N-S leaves > 64-port spine`); }
+      chk(ns.leaf<=64, `${ns.leaf} N-S leaves > 64-port spine`);
+      chk(st.groups.reduce((a,g)=>a+g.leaves,0)===ns.leaf, `N-S striping plan covers ${st.groups.reduce((a,g)=>a+g.leaves,0)} leaves, design has ${ns.leaf}`); }
     else if(ns.nsFold){ const f=ns.nsFold; chk(f.ok&&f.coreDown<=64, "N-S core radix"); for(const x of f.podInfo) chk(x.down<=32&&x.down+x.up<=64&&32%x.Sp===0, "N-S pod spine radix/striping"); }
     else if(ns.beyond) chk(ns.spine===0&&ns.leaf<=2, `N-S beyond rows with ${ns.leaf} leaves and no spine plan`);
     else if(ns.spine>0) chk(ns.leaf<=64&&ns.leaf*32/ns.spine<=64, `N-S row ${ns.leaf} leaves × 32 up over ${ns.spine} spines exceeds 64 ports`);
+    if(!ns.spine&&!ns.sspine) chk(ns.leaf<=2, `${ns.leaf} N-S leaves with no spine — leaf pairs would be disconnected islands`);
     return v;
   }
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS};
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS,mixedLayout};
 })();
 
 /* =====================================================================
@@ -1367,7 +1417,7 @@ function buildBOM(input){
   const tGpus = mixed? input.nodes*input.gph+g2.nodes*g2.gph : input.nodes*input.gph;
   if(mixed){
     flags.push(V.flag(`Mixed GPU host groups on shared fabrics (${input.nodes}× ${gpu.label} + ${g2.nodes}× ${g2.gpu.label})`,
-      `NO published NVIDIA RA covers heterogeneous compute clusters — the shared E-W fabric is sized as a bandwidth/port-exact generic non-blocking Clos (1:1) on the 64×800G radix; rail optimization is undefined across differing per-host rail counts, single plane, Ethernet only. Every component pairing is datasheet-crosschecked; an NVIDIA-reviewed design is required before build`));
+      `NO published NVIDIA RA covers heterogeneous compute clusters — the shared E-W fabric uses the app's rail-aligned mixed layout (rail r of every host in a block lands on one leaf; leaves ≤32 host cages, 1:1, evenly striped to the spines) on the 64×800G radix, single plane, Ethernet only — a defined, port-exact pattern, not an NVIDIA-published one. Every component pairing is datasheet-crosschecked; an NVIDIA-reviewed design is required before build`));
     if(g2.srv){
       if(g2.srv.gpus&&!g2.srv.gpus.includes(g2.gpu.id)) flags.push(V.flag(`${g2.gpu.label} in ${g2.srv.label} (group 2)`,`this GPU is not in the ${g2.srv.oem} documented configurations for the platform (${g2.srv.gpus.join(", ")})`));
       if(g2.srv.ewNics&&!g2.srv.ewNics.includes(g2.ewn.id)) flags.push(V.flag(`${g2.ewn.id} E-W NIC in ${g2.srv.label} (group 2)`,`not in the platform's documented E-W NIC set (${g2.srv.ewNics.join(", ")}); needs ${g2.srv.oem} configuration validation`));
@@ -1399,22 +1449,21 @@ function buildBOM(input){
     return {o:(n.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400,per:1,twin:false};
   };
   if(effPorts!==ewn.ports&&!ibXdrNic) notes.push(`${ewn.id} on ${gpu.label}: ${ewn.onePortNote}.`);
-  let ew = mixed? (()=>{   /* generic 1:1 Clos on total mixed bandwidth — no RA covers mixed GPU fabrics */
-    const ports1=input.nodes*input.ewnicn*effPorts, s1=ewn.speedG||400;
-    const ports2=g2.nodes*g2.ewnicn*g2.eff, s2=g2.ewn.speedG||400;
+  let ew = mixed? (()=>{   /* shared 2-tier fabric with the deterministic rail-aligned mixed layout (E.mixedLayout) */
+    const r1=input.ewnicn*effPorts, r2=g2.ewnicn*g2.eff;
+    const ports1=input.nodes*r1, s1=ewn.speedG||400;
+    const ports2=g2.nodes*r2, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
-    let leaf=Math.max(2,Math.ceil(downG/(32*800))); if(leaf%2) leaf++;            /* even leaf count */
-    const need800=Math.ceil(downG/800), upPer=Math.ceil(need800/leaf);
-    const mst=E.evenStripe([{leaves:leaf,up:upPer}]);
-    const spine=mst?mst.S:Math.max(2,2*Math.ceil(need800/128));
-    const links800=mst?mst.links:need800;
+    const lay=E.mixedLayout([{g:1,nodes:input.nodes,rails:r1,sp:s1},{g:2,nodes:g2.nodes,rails:r2,sp:s2}]);
+    if(!lay.ok) return {mixed:true,infeasible:lay.why,tier:2,planes:1,proto:"eth",leaf:0,spine:0,sspine:0,mg:{downG,ports1,s1,ports2,s2,links800:0,twinHost:0}};
+    const leaf=lay.L, spine=lay.stripe.S, links800=lay.stripe.links;
     return {mixed:true,tier:2,regime:"mixed",planes:1,proto:"eth",rtx:false,
       leaf,spine,sspine:0,coreGroups:0,coreGroupSize:0,pods:0,blocks:1,leavesPerBlock:leaf,nodesPerBlock:totalN,
-      railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:leaf*32,
-      xH:ports1+ports2,xLS:Math.ceil(downG/800),xSS:2*links800,cH:ports1+ports2,cSS:2*links800,splitters:0,legsPerCage:2,overCore:false,
-      spineBasis:`generic non-blocking Clos on mixed host groups: ${downG.toLocaleString()}G host bandwidth ⇒ ${links800.toLocaleString()}×800G uplinks (1:1)`,
-      mg:{downG,links800,ports1,s1,ports2,s2,twinHost:Math.ceil(downG/800)},
-      proof:{nodesInBlock:totalN,downG,upG:downG,ratio:"1.00 : 1 (non-blocking)",cagesUsed:"mixed",cagesAvail:64}};
+      railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:links800,
+      xH:ports1+ports2,xLS:lay.downCages,xSS:2*links800,cH:ports1+ports2,cSS:2*links800,splitters:0,legsPerCage:2,overCore:false,stripe:lay.stripe,
+      spineBasis:`shared 2-tier fabric, rail-aligned mixed layout: ${lay.units.length} rail units (group × host block × rail) dealt round-robin over ${leaf} leaves (≤32 host-facing cages each, 1:1); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
+      mg:{downG,links800,ports1,s1,ports2,s2,r1,r2,twinHost:lay.downCages,layout:lay},
+      proof:{nodesInBlock:totalN,downG,upG:links800*800,ratio:`${(links800*800/downG>=1?"≥1":"<1")}:1 (non-blocking)`,cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu);
   let ewSwitch = E.autoEwSwitch(C,{ib:isIB,oem:input.ewoem,nic:ewn.id});
   if(input.ewswmode==="manual"&&input.ewswitch){
@@ -1542,7 +1591,7 @@ function buildBOM(input){
     if(ew.mixed) ew.mg={...ew.mg,links800:linksAll};
   }
   { const av=E.audit(ew); if(av.length) flags.unshift(V.flag(`PHYSICAL PORT AUDIT FAILED — design not buildable as drawn`,av.join("; "))); ew.auditFail=av; }
-  if(ew.infeasible && !ew.manual) throw new Error(`E-W fabric not physically buildable: ${ew.infeasible}. Options: ${isIB&&!ew.xdr?"choose the Quantum-X800 XDR fabric (ConnectX-8 C8180 on InfiniBand — 144-port Q3400), ":""}${!isIB&&(input.planes||1)===1?"select 2 E-W planes (halves the hosts per plane), ":""}reduce the host count, or split the cluster into separate fabrics.`);
+  if(ew.infeasible && !ew.manual) throw new Error(`E-W fabric not physically buildable: ${ew.infeasible}. Options: ${isIB&&!ew.xdr?"choose the Quantum-X800 XDR fabric (ConnectX-8 C8180 on InfiniBand — 144-port Q3400), ":""}${!isIB&&!mixed&&(input.planes||1)===1?"select 2 E-W planes (halves the hosts per plane), ":""}reduce the host count, or split the cluster into separate fabrics.`);
   const xdrSel=!!(ewSwitch&&ewSwitch.xdr) && !xdrRA;
   if(xdrSel) flags.push(V.flag(`${ewSwitch.id} (Quantum-X800 / Quantum-3 XDR) E-W fabric`,
     `no NVIDIA enterprise RA or SuperPOD XDR table is published — the leaf/spine counts shown follow the NDR SuperPOD H100 pattern (QM9700 radix) as a PLACEHOLDER only; an NVIDIA XDR reference design, the Q32xx/Q34xx UM Interfaces section (NDR-mode operation, port splits) and the LinkX XDR transceiver family must be ingested before this fabric can be validated`));
@@ -1783,7 +1832,6 @@ function buildBOM(input){
     ns.xNode=input.nodes*nsPorts; ns.cNode=input.nodes*nsPorts;      /* group-1 lines; group 2 emitted separately */
     ns.g2={ports:g2.nodes*p2n,pn:p2n,sp:s2n};
     ns.xSw=Math.max(0,ns.xSw+d);
-    if(d>0 && !ns.merged){ const grow=2*Math.ceil(d/64); ns.leaf+=grow; ns.basis+=`; +${grow} leaf for the larger node attach`; }
     ns.basis+=`; MIXED node attach: G1 ${input.nodes}×${nsPorts}×${nsSpeed}G + G2 ${g2.nodes}×${p2n}×${s2n}G = ${ns.pCPU}×800G (vs the table's ${pCPU0})`;
     flags.push(V.flag(`Mixed-group N-S node attach (${ns.pCPU}×800G)`,
       `no RA covers mixed host groups — the converged N-S fabric is sized on the total-node table row with the node attach resized by exact per-group bandwidth from the ${nsn.id} and ${g2.nsn.id} datasheets (DATASHEET-VERIFIED); NVIDIA confirmation required`));
@@ -1794,12 +1842,27 @@ function buildBOM(input){
     const d=ns.pCPU-pCPU0;
     ns.xNode=input.nodes*nsPorts; ns.cNode=input.nodes*nsPorts;
     ns.xSw=Math.max(0,ns.xSw+d);
-    if(d>0 && !ns.merged){ const grow=2*Math.ceil(d/64); ns.leaf+=grow; ns.basis+=`; +${grow} leaf for the larger node attach`; }
     ns.basis+=`; node attach resized for ${input.nsnicn}× ${nsn.id} = ${nsPorts}×${nsSpeed}G/node (${ns.pCPU}×800G vs the table's ${pCPU0})`;
     flags.push(V.flag(`N-S node attach ${input.nsnicn}× ${nsn.id} (${nsPorts}×${nsSpeed}G per node)`,
       `${nsBase.doc} — switch-port allocation resized by exact bandwidth from the ${nsn.id} datasheet (DATASHEET-VERIFIED, not RA-validated); NVIDIA confirmation required`));
     if(nsPorts===1) flags.push(V.flag(`Single-homed N-S attach (1 port per node via ${nsn.id})`,
       `the RA dual-homes every node across a leaf pair for redundancy — a single-port attach loses that; needs a customer-accepted availability design`));
+  }
+  /* N-S capacity re-fit after any node-attach resize: keep the table's switches when every allocated port still
+     fits (pair: 2×64 minus ISL ends; leaf-spine: 32 down per leaf at 1:1); otherwise rebuild N-S as ONE connected,
+     radix-exact fabric (E.closLS) — never add unconnected leaf pairs. */
+  if(ns.nicAdjusted && !ns.merged){
+    const alloc=ns.pCPU+(ns.pStor||0)+(ns.pMgmt||0)+(ns.pCust||0)+(ns.pSupp||0);
+    const fits = ns.spine>0 ? alloc<=ns.leaf*32 : (ns.leaf<=2 && alloc+(ns.pISL||0)<=ns.leaf*64);
+    if(!fits){
+      const L=Math.max(2,2*Math.ceil(alloc/32/2)), c=E.closLS(L,2), links=c.linksLS+c.linksSC;
+      if(c.infeasible) throw new Error(`N-S fabric not physically buildable: ${c.infeasible}.`);
+      const was=`${ns.leaf} leaf${ns.spine?` + ${ns.spine} spine`:""}`;
+      Object.assign(ns,{leaf:L,spine:c.spine,sspine:c.sspine,nsTier:c.tier,nsFold:c.fold,nsStripe:c.stripe,pISL:2*links,xSS:2*links,cSS:links,linksLS:c.linksLS,linksSC:c.linksSC,refit:true});
+      ns.basis+=`; RE-FIT for the resized attach: ${alloc.toLocaleString()} allocated 800G ports ÷ 32 down per leaf = ${L} leaves (was ${was}) — ${c.basis}`;
+      flags.push(V.flag(`N-S fabric re-fit for the resized node attach (${was} → ${L} leaf${c.spine?` + ${c.spine} spine`:""}${c.sspine?` + ${c.sspine} core`:""})`,
+        `the larger node attach no longer fits the RA table's switches; the N-S fabric is rebuilt as one connected, radix-exact fabric (32↓/32↑ leaves, even striping) — DATASHEET-VERIFIED, not RA-validated`));
+    }
   }
   /* dedicated storage: strip the storage allocation out of the converged N-S fabric */
   if(input.stmode==="dedicated" && !ns.merged){
@@ -1846,9 +1909,9 @@ function buildBOM(input){
   { const nv=E.auditNS(ns); if(nv.length) flags.unshift(V.flag("PHYSICAL PORT AUDIT FAILED — N-S design not buildable as drawn",nv.join("; "))); }
   if(ns.merged) notes.push(`Converged N-S at ${input.nodes} nodes: merged into the E-W switches per ${ns.tableName||"the RTX PRO RA"} (≤4 SUs) — no separate N-S switches; its transceivers/cables below are additional to the E-W counts.`);
   else lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+" — converged N-S leaf"+(ns.spine?"":" (collapsed spine-leaf)"),role:"Leaf",
-    qty:ns.leaf, math:ns.basis,cites:ns.cite?[ns.cite,"SN5K"]:nsSwitch.cites,eol:!!nsSwitch.eol,...(ns.beyond?{status:"VERIFIED"}:{})}));
+    qty:ns.leaf, math:ns.basis,cites:ns.cite?[ns.cite,"SN5K"]:nsSwitch.cites,eol:!!nsSwitch.eol,...((ns.beyond||ns.refit)?{status:"VERIFIED"}:{})}));
   if(ns.spine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+(ns.sspine?" — converged N-S pod spine":" — converged N-S spine"),role:"Spine",
-    qty:ns.spine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol,...(ns.beyond?{status:"VERIFIED"}:{})}));
+    qty:ns.spine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol,...((ns.beyond||ns.refit)?{status:"VERIFIED"}:{})}));
   if(ns.sspine) lines.push(V.line({fabric:"ns",sku:nsSwitch.sku,desc:nsSwitch.label+` — converged N-S core / super-spine (${ns.nsFold.coreGroups} groups × ${ns.nsFold.coreGroupSize})`,role:"Super-spine",
     qty:ns.sspine, math:ns.basis,cites:nsSwitch.cites,eol:!!nsSwitch.eol,status:"VERIFIED"}));
   if(ns.beyond&&!ns.merged) flags.push(V.flag(`N-S beyond the published RA rows (${ns.leaf} leaf + ${ns.spine} spine${ns.sspine?` + ${ns.sspine} core`:""})`,`the RA tables stop at 128 nodes; this N-S fabric is sized as ONE connected, radix-exact fabric from the port allocations — not an NVIDIA-published configuration (NVIDIA engagement required)`));
@@ -2076,7 +2139,7 @@ const Exporter = {
     if(bom.mixed) out.push(`Host group 2: ${bom.g2.nodes.toLocaleString()} × ${bom.g2.srv?bom.g2.srv.label:"generic host"} — ${bom.g2.gph}× ${bom.g2.gpu.label}/node, ${bom.g2.ewnicn}× ${bom.g2.ewn.id} E-W, ${bom.g2.nsnicn}× ${bom.g2.nsn.id} N-S`);
     const inc2=bom.inc||{ew:1,ns:1,st:1,oob:1};
     if(inc2.ew) out.push(bom.mixed
-      ?`E-W (Ethernet, mixed host groups): generic 1:1 Clos — ${bom.ew.mg.downG.toLocaleString()}G host bandwidth (${bom.ew.mg.ports1.toLocaleString()}×${bom.ew.mg.s1}G + ${bom.ew.mg.ports2.toLocaleString()}×${bom.ew.mg.s2}G) ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${bom.ewSwitch.sku}) — UNVALIDATED (no NVIDIA RA covers heterogeneous compute fabrics)`
+      ?`E-W (Ethernet, mixed host groups): rail-aligned shared 2-tier fabric — ${bom.ew.mg.downG.toLocaleString()}G host bandwidth (${bom.ew.mg.ports1.toLocaleString()}×${bom.ew.mg.s1}G + ${bom.ew.mg.ports2.toLocaleString()}×${bom.ew.mg.s2}G) ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${bom.ewSwitch.sku}) — UNVALIDATED (no NVIDIA RA covers heterogeneous compute fabrics)`
       :`E-W (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}): rail-optimized, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine (UNVALIDATED sizing)`:""} (${bom.ewSwitch.sku}); ${bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap}`);
     if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s = uplink ${p.upG.toLocaleString()} Gb/s (1:1); cages ${p.cagesUsed}/${p.cagesAvail}`);
     if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s ≤ uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (1:1 non-blocking)`);
@@ -3525,41 +3588,78 @@ const Exporter = {
     y+=46;
     return Dsvg(y+36,"Mixed-group OOB overview",s,oob.rule,"dotted = 1G management · physically isolated");
   }
+  /* ---- MIXED: shared views use the engine's rail-aligned layout (b.ew.mg.layout) — every link exact & labeled ---- */
+  const mCol=g=>g===2?"var(--rail4)":"var(--rail2)";
+  const mRails=rs=>{ rs=[...rs].sort((a,b)=>a-b); if(rs.length<=6) return rs.join(", "); return rs.slice(0,4).join(", ")+` … ${rs[rs.length-1]} (${rs.length})`; };
+  const mLay=b=>(b.ew.mixed&&!b.ew.manual&&b.ew.mg&&b.ew.mg.layout&&b.ew.mg.layout.ok)?b.ew.mg.layout:null;
+  const mNoLay=(b,what)=>Dsvg(120,what,`<text x="450" y="50" text-anchor="middle" fill="var(--fg)" font-weight="700">Manual switch counts — per-leaf rail layout not drawn</text><text x="450" y="70" text-anchor="middle" fill="var(--muted)" font-size="10">the rail-aligned layout is defined for Auto counts; manual totals are checked in aggregate (see the flags)</text>`);
+  /* host blocks of one group present on a leaf: [{g,block,h0,h1,hosts,rails:[…],sp}] */
+  const mBlocksOn=lf=>{ const m=new Map(); for(const u of lf.units){ const k=u.g+"|"+u.block; if(!m.has(k)) m.set(k,{g:u.g,block:u.block,blocks:u.blocks,h0:u.h0,h1:u.h1,hosts:u.hosts,sp:u.sp,rails:[]}); m.get(k).rails.push(u.rail); } return [...m.values()]; };
   function mSpineSVG(b,i){
-    const m=b.ew.mg, per=Math.ceil(m.links800/b.ew.spine); let s="", y=16;
-    s+=Dband(y,`Spine ${i||1} of ${b.ew.spine} — 1× ${b.ewSwitch.id}`,`${per.toLocaleString()}×800G down-links to the shared leaf tier`,"var(--muted)");
-    y+=46; s+=Dtrunk(y,y+26,`${per.toLocaleString()}×800G links (this spine) · 2× twin-port optics per link`); y+=26;
-    s+=Dband(y,`Shared leaf tier — ${b.ew.leaf.toLocaleString()}× ${b.ewSwitch.id}`,`${m.links800.toLocaleString()}×800G leaf↔spine total across ${b.ew.spine} spines`,"var(--rail1)");
-    y+=46;
-    return Dsvg(y+36,"Mixed spine detail",s,
-      `${m.links800.toLocaleString()} ×800G links ÷ ${b.ew.spine} spines ≈ ${per} per spine — even spread`,
-      "generic 1:1 Clos — no RA rail striping is defined for mixed host groups (flagged)");
+    const lay=mLay(b); if(!lay) return mNoLay(b,"Mixed spine detail");
+    const S=lay.stripe.S; i=Math.max(1,Math.min(i||1,S));
+    const sp=DslotAt(S,i), sW=Daw(sp.length,150,40), sX=Dxs(sp.length,sW,40), sY=40;
+    const lv=DslotAt(lay.L,1,2,lay.L), lW=Daw(lv.length,150,26), lX=Dxs(lv.length,lW,26), lY=220;
+    let s="", W=[];
+    sp.forEach((o,k)=>{ if(o.ell){ s+=Dell(sX[k],sY+22); return; }
+      if(o.i===i) s+=`<rect x="${sX[k]-sW/2-3}" y="${sY-3}" width="${sW+6}" height="50" rx="8" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`;
+      s+=Dbox(sX[k]-sW/2,sY,sW,44,"var(--muted)")+`<text x="${sX[k]}" y="${sY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${o.i}</text><text x="${sX[k]}" y="${sY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${lay.stripe.spineDown}/64 down-ports</text>`; });
+    lv.forEach((o,k)=>{ if(o.ell){ s+=Dell(lX[k],lY+23); return; } const lf=lay.leaves[o.i-1];
+      s+=Dbox(lX[k]-lW/2,lY,lW,46,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${o.i}</text><text x="${lX[k]}" y="${lY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${lf.down}↓ / ${lf.up}↑ cages</text>`;
+      sp.forEach((t,j)=>{ if(t.ell) return; W.push({x1:lX[k],y1:lY,x2:sX[j],y2:sY+44,c:"var(--rail1)",lab:`×${lf.k}`,tt:`leaf ${o.i} → spine ${t.i}: ${lf.k} × 800G`}); }); });
+    s+=Dwires(W);
+    return Dsvg(lY+46+58,`Spine ${i} — leaf↔spine spread (mixed)`,s,
+      `spine ${i} takes ${lay.stripe.kMin===lay.stripe.kMax?lay.stripe.kMax:`${lay.stripe.kMin}–${lay.stripe.kMax}`} uplink(s) from EVERY shared leaf — identical role across all ${S} spines · ${lay.stripe.spineDown}/64 spine ports used`,
+      `even striping: every leaf sends the same whole number of uplinks to each spine; each leaf 1:1 (up ≥ down) · ${lay.L} leaves ≤ 64`);
   }
   function mLeafSVG(b,i){
-    const m=b.ew.mg, up=Math.ceil(m.links800/b.ew.leaf), d1=Math.ceil(m.ports1/b.ew.leaf), d2=Math.ceil(m.ports2/b.ew.leaf); let s="", y=16;
-    s+=Dband(y,`Spine tier — ${b.ew.spine.toLocaleString()}× ${b.ewSwitch.id}`,"","var(--muted)");
-    y+=46; s+=Dtrunk(y,y+24,`${up.toLocaleString()}×800G uplinks (this leaf)`); y+=24;
-    s+=Dband(y,`Leaf ${i||1} of ${b.ew.leaf} — 1× ${b.ewSwitch.id}`,`32×800G down-cages · 32×800G up-cages`,"var(--rail1)");
-    y+=46; s+=Dtrunk(y,y+24,`≈${d1.toLocaleString()}×${m.s1}G G1 + ≈${d2.toLocaleString()}×${m.s2}G G2 host ports (this leaf)`); y+=24;
-    s+=Dband(y,`Host group 1 — ${m.ports1.toLocaleString()}×${m.s1}G across the tier`,"","var(--rail2)");
-    y+=46;
-    s+=Dband(y,`Host group 2 — ${m.ports2.toLocaleString()}×${m.s2}G across the tier`,"","var(--rail4)");
-    y+=46;
-    return Dsvg(y+36,"Mixed shared-leaf detail",s,
-      `host ports spread evenly across ${b.ew.leaf} leaves (≈ shown); exact per-leaf rail layout is undefined — no RA covers mixed groups`,
-      `down ${m.downG.toLocaleString()}G ≤ up ${(m.links800*800).toLocaleString()}G (1:1 non-blocking)`);
+    const lay=mLay(b); if(!lay) return mNoLay(b,"Mixed shared-leaf detail");
+    i=Math.max(1,Math.min(i||1,lay.L)); const lf=lay.leaves[i-1], S=lay.stripe.S;
+    const sp=Dpick(S), sX=sp.length===3?[230,450,670]:sp.map((_,k)=>450+(k-(sp.length-1)/2)*220), sY=30, lY=170, bY=330;
+    const blocks=mBlocksOn(lf), shown=blocks.length<=4?blocks:[...blocks.slice(0,3),{more:blocks.length-3}];
+    const bW=Daw(shown.length,200,20), bX=Dxs(shown.length,bW,20);
+    let s="", W=[];
+    sp.forEach((g,k)=>{ s+=Dbox(sX[k]-70,sY,140,44,"var(--muted)")+`<text x="${sX[k]}" y="${sY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">spine ${g}</text><text x="${sX[k]}" y="${sY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">${b.ewSwitch.id}</text>`;
+      if(sp.length===3&&k===1&&sp[2]>3) s+=Dell((sX[1]+sX[2])/2,sY+22);
+      W.push({x1:450,y1:lY,x2:sX[k],y2:sY+44,c:"var(--muted)",lab:`×${lf.k}`,tt:`leaf ${i} → spine ${g}: ${lf.k} × 800G`}); });
+    s+=`<rect x="297" y="${lY-3}" width="306" height="58" rx="9" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`+Dbox(300,lY,300,52,"var(--rail1)")
+      +`<text x="450" y="${lY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaf ${i} of ${lay.L} — 1× ${b.ewSwitch.id}</text>`
+      +`<text x="450" y="${lY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${lf.down} host-facing + ${lf.up} uplink cages of 64 · 1:1</text>`;
+    shown.forEach((u,k)=>{ const x=bX[k];
+      if(u.more){ s+=Dbox(x-bW/2,bY,bW,62,"var(--muted)",true)+`<text x="${x}" y="${bY+28}" text-anchor="middle" fill="var(--muted)" font-weight="700">+${u.more} more host blocks</text><text x="${x}" y="${bY+44}" text-anchor="middle" fill="var(--muted)" font-size="9.5">same pattern — see SU views</text>`; return; }
+      const G=mG(b,u.g), n=u.hosts*u.rails.length;
+      s+=Dbox(x-bW/2,bY,bW,62,mCol(u.g))+`<text x="${x}" y="${bY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">Group ${u.g} · hosts ${u.h0}–${u.h1}</text>`
+        +`<text x="${x}" y="${bY+33}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.gpu.length>24?G.gpu.slice(0,23)+"…":G.gpu}${u.blocks>1?` · block ${u.block}`:""}</text>`
+        +`<text x="${x}" y="${bY+48}" text-anchor="middle" fill="${mCol(u.g)}" font-size="9.5" font-weight="700">rail ${mRails(u.rails)}</text>`;
+      W.push({x1:x,y1:bY,x2:450,y2:lY+52,c:mCol(u.g),lab:`×${n}`,tt:`Group ${u.g} hosts ${u.h0}–${u.h1} → leaf ${i}: ${u.hosts} host(s) × ${u.rails.length} rail(s) [${u.rails.join(", ")}] = ${n} × ${u.sp}G`}); });
+    s+=Dwires(W);
+    const g1=blocks.filter(x=>x.g===1).reduce((a,x)=>a+x.hosts*x.rails.length,0), g2=blocks.filter(x=>x.g===2).reduce((a,x)=>a+x.hosts*x.rails.length,0);
+    return Dsvg(bY+62+58,`Shared leaf ${i} — exact rail layout (mixed)`,s,
+      `leaf ${i}: ${g1} × ${b.ew.mg.s1}G (group 1) + ${g2} × ${b.ew.mg.s2}G (group 2) host legs = ${lf.down} cages down · ${lf.k} uplink(s) to each of ${S} spines = ${lf.up} up (1:1)`,
+      `rail r of every host in a block → ONE leaf · ${lay.units.length} rail units over ${lay.L} leaves, ≤32 host cages each · app-defined (no RA)`);
   }
   function mNsLeafSVG(b){
-    const ns=b.ns, i=b.input; let s="", y=16;
-    const p1=i.nodes*(ns.nsPortsPerNode||2), g2p=ns.g2?ns.g2.ports:0;
-    s+=Dband(y,`N-S leaf tier — ${ns.leaf.toLocaleString()}× ${b.nsSwitch.id}`,`${ns.pCPU.toLocaleString()}×800G node attach${ns.xSS?` · ISL ${(ns.xSS/2).toLocaleString()} links`:""}`,"var(--ok)");
-    y+=46; s+=Dtrunk(y,y+24,`${p1.toLocaleString()}×${ns.nsSpeedG||200}G (G1) + ${g2p.toLocaleString()}×${ns.g2?ns.g2.sp:400}G (G2)`); y+=24;
-    s+=Dband(y,`Host group 1 — ${i.nodes.toLocaleString()} hosts`,`${p1.toLocaleString()} ports: ${i.nsnicn}× ${i.nsnic} per host (${ns.nsPortsPerNode||2}×${ns.nsSpeedG||200}GbE)`,"var(--rail2)");
-    y+=46;
-    s+=Dband(y,`Host group 2 — ${i.g2nodes.toLocaleString()} hosts`,`${g2p.toLocaleString()} ports: ${i.g2nsnicn}× ${i.g2nsnic} per host${ns.g2?` (${ns.g2.pn}×${ns.g2.sp}GbE)`:""}`,"var(--rail4)");
-    y+=46;
-    return Dsvg(y+36,"Mixed N-S leaf detail",s,ns.basis.length>150?ns.basis.slice(0,147)+"…":ns.basis,
-      "mixed node attach resized by exact per-group bandwidth — flagged, DATASHEET-VERIFIED");
+    const ns=b.ns, i=b.input;
+    const pn1=ns.nsPortsPerNode||2, sp1=ns.nsSpeedG||200, pn2=ns.g2?ns.g2.pn:2, sp2=ns.g2?ns.g2.sp:400;
+    const G1=mG(b,1), G2=mG(b,2), lY=50, hY=240, W=[];
+    const pair=ns.merged?["E-W leaf (VLAN)","E-W leaf (VLAN)"]:["N-S leaf A","N-S leaf B"];
+    let s=`<text x="450" y="24" text-anchor="middle" fill="var(--fg)" font-weight="700">${ns.merged?"Converged on the shared E-W leaves":`N-S leaf pair (any of ${Math.max(1,Math.floor(ns.leaf/2))}) — ${b.nsSwitch.id}`}</text>`;
+    const lx=[300,600];
+    lx.forEach((x,k)=>{ s+=Dbox(x-120,lY,240,50,"var(--ok)",ns.merged)+`<text x="${x}" y="${lY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pair[k]}</text><text x="${x}" y="${lY+37}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${ns.merged?"VLAN-isolated":`64×800G · dual-homed attach`}</text>`; });
+    if(!ns.merged&&ns.pISL>0&&!ns.spine) s+=`<line x1="420" y1="${lY+25}" x2="480" y2="${lY+25}" stroke="var(--ok)" stroke-width="2.2"/><text x="450" y="${lY+18}" text-anchor="middle" fill="var(--ok)" font-size="9.5" font-weight="700">ISL</text>`;
+    const hosts=[{x:240,G:G1,g:1,pn:pn1,sp:sp1,nic:`${i.nsnicn}× ${i.nsnic}`},{x:660,G:G2,g:2,pn:pn2,sp:sp2,nic:`${i.g2nsnicn}× ${i.g2nsnic}`}];
+    for(const h of hosts){
+      s+=Dbox(h.x-150,hY,300,60,mCol(h.g))+`<text x="${h.x}" y="${hY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Group ${h.g} host (any of ${h.G.n.toLocaleString()})</text>`
+        +`<text x="${h.x}" y="${hY+34}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${h.G.gpu.length>30?h.G.gpu.slice(0,29)+"…":h.G.gpu}</text>`
+        +`<text x="${h.x}" y="${hY+49}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${h.nic} — ${h.pn}×${h.sp}GbE</text>`;
+      const per=h.pn>=2?[Math.ceil(h.pn/2),Math.floor(h.pn/2)]:[h.pn,0];
+      lx.forEach((x,k)=>{ if(!per[k]) return; W.push({x1:h.x+(k?40:-40),y1:hY,x2:x,y2:lY+50,c:mCol(h.g),lab:`×${per[k]}`,tt:`Group ${h.g} host → ${pair[k]}: ${per[k]} × ${h.sp}GbE${h.pn>=2?" (dual-homed: one port to each leaf of the pair)":" (single-homed — flagged)"}`}); });
+    }
+    s+=Dwires(W);
+    const t1=G1.n*pn1, t2=G2.n*pn2;
+    return Dsvg(hY+60+58,"Mixed N-S leaf pair — exact host attach",s,
+      `every host is dual-homed: one N-S port to each leaf of its pair · group 1: ${t1.toLocaleString()} × ${sp1}G · group 2: ${t2.toLocaleString()} × ${sp2}G · ${ns.pCPU.toLocaleString()}×800G leaf ports`,
+      `${ns.merged?"merged into the shared E-W leaves (VLAN)":`${ns.leaf} N-S leaves (${Math.max(1,Math.floor(ns.leaf/2))} pair${ns.leaf>3?"s":""})${ns.spine?` + ${ns.spine} spine`:""}`} · mixed node attach resized by exact per-group bandwidth — flagged`);
   }
   function mOobSwSVG(b){
     const oob=b.oob, per=Math.ceil(oob.cat6/oob.switches); let s="", y=16;
@@ -3571,42 +3671,52 @@ const Exporter = {
       "the RA per-SU rule assumes homogeneous SUs — mixed OOB is a generic 48-port fill (flagged)");
   }
   function mSuSVG(b,si,grp){
-    const gi=grp==="g2"?2:1, G=mG(b,gi), col=gi===2?"var(--rail4)":"var(--rail2)";
+    const gi=grp==="g2"?2:1, G=mG(b,gi), col=mCol(gi), lay=mLay(b);
     const suN=4, count=Math.max(1,Math.ceil(G.n/suN)); si=Math.max(1,Math.min(si||1,count));
-    const present=Math.min(suN,G.n-(si-1)*suN), delta=suN-present;
-    const L=b.ew.leaf, lRow=Dslot(L,6), lXs=Dxs(lRow.length,110,18);
-    const lY=40,lH=42, nY=176,nH=58;
-    let s=`<text x="450" y="22" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaf tier — ${L.toLocaleString()}× ${b.ewSwitch.id}</text>`;
-    lRow.forEach((o,k)=>{ if(o.ell){s+=Dell(lXs[k],lY+lH/2);return;}
-      s+=Dbox(lXs[k]-55,lY,110,lH,"var(--rail1)")+`<text x="${lXs[k]}" y="${lY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700">Leaf ${o.i.toLocaleString()}</text><text x="${lXs[k]}" y="${lY+33}" text-anchor="middle" fill="var(--muted)" font-size="9">32×800G down-cages</text>`;});
-    const nXs=Dxs(suN,152,28), perHost=Math.round(G.ports/Math.max(1,G.n)), dist=Math.max(1,Math.min(G.nicn,L));
+    const present=Math.min(suN,G.n-(si-1)*suN), h0=(si-1)*suN+1;
+    if(!lay) return mNoLay(b,`Host group ${gi} SU ${si}`);
+    /* leaves this SU's hosts use, with the rails each host sends there */
+    const per=new Map();
+    for(const u of lay.units) if(u.g===gi&&u.h0<=h0&&h0<=u.h1){ if(!per.has(u.leaf)) per.set(u.leaf,[]); per.get(u.leaf).push(u.rail); }
+    const leafIds=[...per.keys()].sort((a,b)=>a-b);
+    const shownL=leafIds.length<=5?leafIds:[leafIds[0],leafIds[1],leafIds[2],null,leafIds[leafIds.length-1]];
+    const lW=Daw(shownL.length,150,18), lX=Dxs(shownL.length,lW,18), lY=40, hY=250, hX=Dxs(suN,176,22);
+    let s=`<text x="450" y="24" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaves used by group ${gi} · SU ${si} (${leafIds.length} of ${lay.L} leaves)</text>`, W=[];
+    shownL.forEach((L,k)=>{ if(L==null){ s+=Dell(lX[k],lY+24); return; }
+      s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">rail ${mRails(per.get(L))}</text>`; });
     for(let j=0;j<suN;j++){
-      const hx=nXs[j], planned=j>=present, hostNo=(si-1)*suN+j+1;
-      for(let r=0;r<dist;r++){
-        const li=r%L, lk=lRow.findIndex(o=>o.i===li+1), tx=lk>=0?lXs[lk]:lXs[lRow.length-1];
-        s+=`<line x1="${hx}" y1="${nY}" x2="${tx}" y2="${lY+lH}" stroke="${planned?"var(--muted)":col}" stroke-width="1.3" opacity="0.85"${planned?' stroke-dasharray="3 4"':''}/>`;
-      }
-      s+=Dbox(hx-76,nY,152,nH,planned?"var(--muted)":col,planned)
-        +`<text x="${hx}" y="${nY+18}" text-anchor="middle" fill="${planned?"var(--muted)":"var(--fg)"}" font-weight="700">${planned?"planned":`Host ${hostNo.toLocaleString()}`}</text>`
-        +`<text x="${hx}" y="${nY+32}" text-anchor="middle" fill="var(--muted)" font-size="9">${planned?"SU expansion slot":`${G.gph}× ${G.gpu}`}</text>`
-        +`<text x="${hx}" y="${nY+46}" text-anchor="middle" fill="var(--muted)" font-size="9">${planned?"not in this BOM":`${G.nicn}× ${G.nic.id} — ${perHost}×${G.sp}G`}</text>`;
+      const hx=hX[j], planned=j>=present, hn=h0+j;
+      if(!planned) shownL.forEach((L,k)=>{ if(L==null) return; const rs=per.get(L);
+        W.push({x1:hx,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${rs.length}`,tt:`Group ${gi} host ${hn} → leaf ${L}: rail ${rs.join(", ")} = ${rs.length} × ${G.sp}G`}); });
+      s+=Dbox(hx-88,hY,176,58,planned?"var(--muted)":col,planned)
+        +`<text x="${hx}" y="${hY+18}" text-anchor="middle" fill="${planned?"var(--muted)":"var(--fg)"}" font-weight="700">${planned?"planned slot":`Host ${hn.toLocaleString()}`}</text>`
+        +`<text x="${hx}" y="${hY+33}" text-anchor="middle" fill="var(--muted)" font-size="9">${planned?"SU expansion — not in this BOM":`${G.gph}× ${G.gpu.length>22?G.gpu.slice(0,21)+"…":G.gpu}`}</text>`
+        +`<text x="${hx}" y="${hY+47}" text-anchor="middle" fill="var(--muted)" font-size="9">${planned?"":`${G.nicn}× ${G.nic.id} — ${G.ports/G.n}×${G.sp}G`}</text>`;
     }
-    return Dsvg(nY+nH+56,`Host group ${gi} SU ${si}`,s,
-      `SU ${si} of ${count} (group ${gi}): ${present} host${present>1?"s":""}${delta?` + ${delta} planned (dotted) — completes the ${suN}-host SU per the RA pattern; planned hosts carry no BOM quantities`:""} · links: NIC r → leaf (r mod ${L}), rail-aligned per group`,
-      "mixed fabric: rail alignment shown as a per-group pattern only — no NVIDIA RA covers mixed host groups (flagged)");
+    s+=Dwires(W);
+    return Dsvg(hY+58+58,`Host group ${gi} SU ${si} — exact rail layout`,s,
+      `every host of this SU sends the SAME rails to the same leaf (rail-aligned) · per host: ${G.ports/G.n} × ${G.sp}G over ${leafIds.length} leaves`,
+      `SU ${si} of ${count} (group ${gi}): ${present} host${present>1?"s":""}${present<suN?` + ${suN-present} planned (dotted, no BOM quantities)`:""} · app-defined mixed layout — no NVIDIA RA covers mixed groups (flagged)`);
   }
   function mHostSVG(b,gi){
     gi=gi===2?2:1; const G=mG(b,gi), fab=(typeof TOPO!=="undefined"&&TOPO.fab)||"ew", i=b.input; let s="", y=16;
     const col=gi===2?"var(--rail4)":"var(--rail2)";
     if(fab==="ew"){
-      const ff=(G.nic.ff||"").indexOf("QSFP112")>=0?"QSFP112":"OSFP", optic=ff==="QSFP112"?"MMA1Z00-NS400":"MMA4Z00-NS400";
-      s+=Dband(y,`Shared leaf tier — ${b.ew.leaf.toLocaleString()}× ${b.ewSwitch.id}`,"","var(--rail1)");
-      y+=46; s+=Dtrunk(y,y+24,`${(G.ports/G.n).toLocaleString()}×${G.sp}G ports per host · ${optic}-class optics (${ff})`); y+=24;
-      s+=Dband(y,`1 host (of ${G.n.toLocaleString()}) — ${G.srv}`,`${G.gph}× ${G.gpu} · ${G.nicn}× ${G.nic.id} E-W`,col);
-      y+=46;
-      return Dsvg(y+36,`Host group ${gi} E-W attach`,s,
-        `group total: ${G.ports.toLocaleString()}×${G.sp}G host ports into the shared leaf tier`,
-        "single plane — no rail optimization is defined across mixed groups (flagged)");
+      const lay=mLay(b); if(!lay) return mNoLay(b,`Host group ${gi} E-W attach`);
+      const per=new Map(); for(const u of lay.units) if(u.g===gi&&u.h0===1){ if(!per.has(u.leaf)) per.set(u.leaf,[]); per.get(u.leaf).push(u.rail); }
+      const ids=[...per.keys()].sort((a,b)=>a-b), shown=ids.length<=6?ids:[ids[0],ids[1],ids[2],null,ids[ids.length-2],ids[ids.length-1]];
+      const lW=Daw(shown.length,130,16), lX=Dxs(shown.length,lW,16), lY=40, hY=230; let W=[];
+      s=`<text x="450" y="24" text-anchor="middle" fill="var(--fg)" font-weight="700">One group-${gi} host → the shared leaves (${ids.length} of ${lay.L})</text>`;
+      shown.forEach((L,k)=>{ if(L==null){ s+=Dell(lX[k],lY+24); return; }
+        s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">rail ${mRails(per.get(L))}</text>`;
+        W.push({x1:450,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${per.get(L).length}`,tt:`Group ${gi} host 1 → leaf ${L}: rail ${per.get(L).join(", ")} = ${per.get(L).length} × ${G.sp}G`}); });
+      s+=Dbox(300,hY,300,58,col)+`<text x="450" y="${hY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Host 1 (of ${G.n.toLocaleString()}) — ${G.srv}</text>`
+        +`<text x="450" y="${hY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.gph}× ${G.gpu} · ${G.nicn}× ${G.nic.id}</text>`
+        +`<text x="450" y="${hY+49}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.ports/G.n} rails × ${G.sp}G (rail r = NIC port r)</text>`;
+      s+=Dwires(W);
+      return Dsvg(hY+58+58,`Host group ${gi} E-W attach — exact rails`,s,
+        `every group-${gi} host in the same block repeats this map exactly (rail-aligned) · group total ${G.ports.toLocaleString()} × ${G.sp}G`,
+        "single plane, shared leaves · app-defined mixed layout — no NVIDIA RA covers mixed groups (flagged)");
     }
     if(fab==="ns"||fab==="st"){
       const pn=gi===2?(b.ns.g2?b.ns.g2.pn:2):(b.ns.nsPortsPerNode||2), sp=gi===2?(b.ns.g2?b.ns.g2.sp:400):(b.ns.nsSpeedG||200);
@@ -3659,7 +3769,7 @@ const Exporter = {
     y=suY+44;
     y+=10;
     return Dsvg(y+40,"Mixed-group shared E-W fabric",s,
-      "two host groups share one E-W fabric — generic non-blocking Clos (1:1), single plane, Ethernet",
+      "two host groups share one E-W fabric — rail r of a host block → one leaf · 1:1 · single plane · Ethernet",
       "no published NVIDIA RA covers mixed GPU fabrics — flagged; NVIDIA-reviewed design required before build");
   }
   function genMixedNsOv(b,live){
@@ -3731,9 +3841,9 @@ const Exporter = {
     const dualNote=b.input.planes===2?" — twin-planar: identical per-plane design (PLANE A / PLANE B)":"";
     if(b.mixed){
       if(fab==="ew"){
-        add("Fabric overview — mixed host groups",genMixedEwOv(b),"generic 1:1 Clos — flagged, no RA");
-        add("Spine - Leaf connectivity",mSpineSVG(b,1),"representative spine — even spread");
-        add("Shared leaf — port accounting",mLeafSVG(b,1),"representative leaf — both host groups");
+        add("Fabric overview — mixed host groups",genMixedEwOv(b),"rail-aligned shared layout — flagged, no RA");
+        add("Spine - Leaf connectivity",mSpineSVG(b,1),"every leaf → this spine, link counts");
+        add("Shared leaf — exact rail layout",mLeafSVG(b,1),"leaf 1: its spines and every host block/rail cabled to it");
         const n1=b.input.nodes, n2=+b.input.g2nodes||0, c1=Math.max(1,Math.ceil(n1/4)), c2=Math.max(1,Math.ceil(n2/4));
         add("Host group 1 — SU attach (rail-aligned)",mSuSVG(b,1,"g1"),"representative SU — group 1");
         if(n1%4&&c1>1) add(`Host group 1 — partial SU ${c1}`,mSuSVG(b,c1,"g1"),"dotted = planned hosts");
@@ -3818,7 +3928,7 @@ const Exporter = {
       suoob:{t:i=>`Inside SU ${i.toLocaleString()} — OOB attach`,f:suOobSVG},
       /* mixed-host-group detail views */
       mspine:{t:i=>`Spine ${i||1} — leaf↔spine spread (mixed)`,f:mSpineSVG},
-      mleaf:{t:i=>`Shared leaf ${i||1} — port accounting`,f:mLeafSVG},
+      mleaf:{t:i=>`Shared leaf ${i||1} — exact rail layout & links`,f:mLeafSVG},
       mnsleaf:{t:i=>`N-S leaf ${i||1} — mixed node attach`,f:mNsLeafSVG},
       msu:{t:(i,pl)=>`Host group ${pl==="g2"?2:1} — SU ${i||1} rail-aligned attach`,f:mSuSVG},
       moobsw:{t:"OOB switch (representative) — mixed 1G port fill",f:mOobSwSVG},
@@ -4145,7 +4255,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
       </div>
 
       <div class="card"><header><h2>Design summary &amp; oversubscription proof</h2></header><div class="body">
-        ${bom.inc.ew&&bom.mixed?`<div class="note"><b>E-W topology (Ethernet — mixed host groups):</b> generic 1:1 non-blocking Clos, single plane: ${bom.ew.mg.downG.toLocaleString()}G total host bandwidth ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${esc(bom.ewSwitch.label)}). No NVIDIA RA covers heterogeneous compute fabrics — flagged UNVALIDATED.</div>
+        ${bom.inc.ew&&bom.mixed?`<div class="note"><b>E-W topology (Ethernet — mixed host groups):</b> rail-aligned shared 2-tier fabric (app-defined layout), 1:1 non-blocking, single plane: ${bom.ew.mg.downG.toLocaleString()}G total host bandwidth ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${esc(bom.ewSwitch.label)}). No NVIDIA RA covers heterogeneous compute fabrics — flagged UNVALIDATED.</div>
         <div class="proof">Mixed E-W (shared Clos):
   group 1 = ${i.nodes.toLocaleString()} hosts ⇒ ${bom.ew.mg.ports1.toLocaleString()} ports @ ${bom.ew.mg.s1}G
   group 2 = ${bom.g2.nodes.toLocaleString()} hosts ⇒ ${bom.ew.mg.ports2.toLocaleString()} ports @ ${bom.ew.mg.s2}G
@@ -4303,7 +4413,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="73";
+  const APP_BUILD="74";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
