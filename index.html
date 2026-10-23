@@ -833,7 +833,7 @@ const Engine = (() => {
       • units are dealt round-robin across L leaves (group 1 first, then group 2); L = smallest even count for which
         no leaf exceeds 32 host-facing 800G cages (cages never mix groups or blocks);
       • every leaf runs 1:1 (up = down) and stripes its uplinks evenly over the spines (evenStripe). */
-  function mixedLayout(groups){
+  function mixedLayout(groups,opt={}){
     const units=[];
     for(const G of groups){ const B=Math.max(1,Math.floor(16*800/G.sp)), nb=ceil(G.nodes/B);
       for(let k=0;k<nb;k++){ const h0=k*B+1, h1=Math.min(G.nodes,(k+1)*B), hosts=h1-h0+1;
@@ -842,6 +842,13 @@ const Engine = (() => {
     const cagesOf=us=>{ const g={}; for(const u of us) g[u.g]=(g[u.g]||0)+u.bw; return Object.values(g).reduce((a,bw)=>a+ceil(bw/800),0); };
     const totBW=units.reduce((a,u)=>a+u.bw,0);
     const order=units.map((u,i)=>i).sort((a,b)=>units[b].bw-units[a].bw||a-b);   /* largest units first, stable */
+    if(opt.L){ /* MANUAL leaf count: same rail-unit placement over exactly L leaves (overload is reported by the caller, never hidden) */
+      const L=opt.L, bucket=Array.from({length:L},()=>[]);
+      for(const i of order){ let best=0, bl=1e18; for(let j=0;j<L;j++){ const load=bucket[j].reduce((a,u)=>a+u.bw,0); if(load<bl){ bl=load; best=j; } } bucket[best].push(units[i]); units[i].leaf=best+1; }
+      const down=bucket.map(cagesOf);
+      const leaves=down.map((d,i)=>({leaf:i+1,down:d,k:0,up:0,units:units.filter(u=>u.leaf===i+1).sort((a,b)=>a.g-b.g||a.block-b.block||a.rail-b.rail)}));
+      return {ok:true,manual:true,L,units,leaves,stripe:null,downCages:down.reduce((a,b)=>a+b,0)};
+    }
     for(let L=Math.max(2,2*ceil(totBW/800/64)); L<=64; L+=2){
       /* balanced, deterministic placement: each unit → the least-loaded leaf that keeps it ≤ 32 cages */
       const bucket=Array.from({length:L},()=>[]); let fit=true;
@@ -1454,7 +1461,8 @@ function buildBOM(input){
     const ports1=input.nodes*r1, s1=ewn.speedG||400;
     const ports2=g2.nodes*r2, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
-    const lay=E.mixedLayout([{g:1,nodes:input.nodes,rails:r1,sp:s1},{g:2,nodes:g2.nodes,rails:r2,sp:s2}]);
+    const groupsDef=[{g:1,nodes:input.nodes,rails:r1,sp:s1},{g:2,nodes:g2.nodes,rails:r2,sp:s2}];
+    const lay=E.mixedLayout(groupsDef);
     if(!lay.ok) return {mixed:true,infeasible:lay.why,tier:2,planes:1,proto:"eth",leaf:0,spine:0,sspine:0,mg:{downG,ports1,s1,ports2,s2,links800:0,twinHost:0}};
     const leaf=lay.L, spine=lay.stripe.S, links800=lay.stripe.links;
     return {mixed:true,tier:2,regime:"mixed",planes:1,proto:"eth",rtx:false,
@@ -1462,7 +1470,7 @@ function buildBOM(input){
       railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:links800,
       xH:ports1+ports2,xLS:lay.downCages,xSS:2*links800,cH:ports1+ports2,cSS:2*links800,splitters:0,legsPerCage:2,overCore:false,stripe:lay.stripe,
       spineBasis:`shared 2-tier fabric, rail-aligned mixed layout: ${lay.units.length} rail units (group × host block × rail) dealt round-robin over ${leaf} leaves (≤32 host-facing cages each, 1:1); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
-      mg:{downG,links800,ports1,s1,ports2,s2,r1,r2,twinHost:lay.downCages,layout:lay},
+      mg:{downG,links800,ports1,s1,ports2,s2,r1,r2,twinHost:lay.downCages,layout:lay,groupsDef},
       proof:{nodesInBlock:totalN,downG,upG:links800*800,ratio:`${(links800*800/downG>=1?"≥1":"<1")}:1 (non-blocking)`,cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu);
   let ewSwitch = E.autoEwSwitch(C,{ib:isIB,oem:input.ewoem,nic:ewn.id});
@@ -1495,7 +1503,7 @@ function buildBOM(input){
      every violation — never silently accept a count that breaks a design rule ---- */
   if(input.dmode==="custom" && input.ewcountmode==="manual" && (+input.ewleafn>0)){
     const L=Math.max(0,Math.floor(+input.ewleafn)), S=Math.max(0,Math.floor(+input.ewspinen||0));
-    const P=ew.planes||1, auto={leaf:ew.leaf,spine:ew.spine,sspine:ew.sspine||0};
+    const P=ew.planes||1, auto={leaf:ew.leaf,spine:ew.spine,sspine:ew.sspine||0}; let mLayM=null;
     const xdr=!!ew.xdr, ibN=ew.proto==="ib"&&!xdr, eth=!xdr&&!ibN;
     const R = xdr?{down:72,up:72,spine:144,unit:"800G XDR port",lG:800}
             : ibN?{down:32,up:32,spine:64,unit:"400G NDR port",lG:400}
@@ -1514,7 +1522,11 @@ function buildBOM(input){
     const aligned=!ew.mixed&&lpb>0&&lp%lpb===0;
     let groups, blocksM=1, lpbM=lp, idle=0;
     if(ew.mixed){
-      const dT=Math.ceil(ew.mg.downG/800/P); groups=[{leaves:lp,down:Math.ceil(dT/lp),up:Math.ceil(dT/lp)}];
+      /* rail-aligned layout over the USER's leaf count — the same placement rule as Auto, so every view stays exact */
+      mLayM=ew.mg.groupsDef?E.mixedLayout(ew.mg.groupsDef,{L:lp}):null;
+      if(mLayM){ const by={}; mLayM.leaves.forEach(l=>{ by[l.down]=(by[l.down]||0)+1; });
+        groups=Object.entries(by).map(([d,n])=>({leaves:n,down:+d,up:+d})).sort((a,b)=>b.down-a.down); }
+      else { const dT=Math.ceil(ew.mg.downG/800/P); groups=[{leaves:lp,down:Math.ceil(dT/lp),up:Math.ceil(dT/lp)}]; }
     } else if(aligned){
       blocksM=lp/lpb; lpbM=lpb;
       const need=Math.ceil(input.nodes/cap);
@@ -1587,8 +1599,13 @@ function buildBOM(input){
       stripe:ew.__stripe||null,
       spineBasis:`MANUAL counts: ${L} leaf + ${S} spine${P>1?` (${lp} + ${sp} per plane)`:""} — ${note}; ${links.toLocaleString()} leaf↔spine links/plane; oversubscription ${ratio}`,
       proof:{...(ew.proof||{}),ratio}};
+    if(ew.mixed){
+      if(mLayM){ const st=ew.stripe, kOf=d=>{ if(!st) return 0; const g=st.groups.find(x=>x.up===d); return g?g.k:0; };
+        mLayM.leaves.forEach(l=>{ l.k=kOf(l.down); l.up=l.k*(st?st.S:0); });
+        mLayM.stripe=st; ew.xLS=mLayM.downCages; }
+      ew.mg={...ew.mg,links800:linksAll,layout:mLayM||ew.mg.layout,twinHost:mLayM?mLayM.downCages:ew.mg.twinHost};
+    }
     delete ew.__stripe;
-    if(ew.mixed) ew.mg={...ew.mg,links800:linksAll};
   }
   { const av=E.audit(ew); if(av.length) flags.unshift(V.flag(`PHYSICAL PORT AUDIT FAILED — design not buildable as drawn`,av.join("; "))); ew.auditFail=av; }
   if(ew.infeasible && !ew.manual) throw new Error(`E-W fabric not physically buildable: ${ew.infeasible}. Options: ${isIB&&!ew.xdr?"choose the Quantum-X800 XDR fabric (ConnectX-8 C8180 on InfiniBand — 144-port Q3400), ":""}${!isIB&&!mixed&&(input.planes||1)===1?"select 2 E-W planes (halves the hosts per plane), ":""}reduce the host count, or split the cluster into separate fabrics.`);
@@ -3591,12 +3608,12 @@ const Exporter = {
   /* ---- MIXED: shared views use the engine's rail-aligned layout (b.ew.mg.layout) — every link exact & labeled ---- */
   const mCol=g=>g===2?"var(--rail4)":"var(--rail2)";
   const mRails=rs=>{ rs=[...rs].sort((a,b)=>a-b); if(rs.length<=6) return rs.join(", "); return rs.slice(0,4).join(", ")+` … ${rs[rs.length-1]} (${rs.length})`; };
-  const mLay=b=>(b.ew.mixed&&!b.ew.manual&&b.ew.mg&&b.ew.mg.layout&&b.ew.mg.layout.ok)?b.ew.mg.layout:null;
-  const mNoLay=(b,what)=>Dsvg(120,what,`<text x="450" y="50" text-anchor="middle" fill="var(--fg)" font-weight="700">Manual switch counts — per-leaf rail layout not drawn</text><text x="450" y="70" text-anchor="middle" fill="var(--muted)" font-size="10">the rail-aligned layout is defined for Auto counts; manual totals are checked in aggregate (see the flags)</text>`);
+  const mLay=b=>(b.ew.mixed&&b.ew.mg&&b.ew.mg.layout&&b.ew.mg.layout.ok&&b.ew.mg.layout.L===b.ew.leaf)?b.ew.mg.layout:null;
+  const mNoLay=(b,what)=>Dsvg(120,what,`<text x="450" y="50" text-anchor="middle" fill="var(--fg)" font-weight="700">No spine tier in this design</text><text x="450" y="70" text-anchor="middle" fill="var(--muted)" font-size="10">the manual counts set 0 spines — see the flags</text>`);
   /* host blocks of one group present on a leaf: [{g,block,h0,h1,hosts,rails:[…],sp}] */
   const mBlocksOn=lf=>{ const m=new Map(); for(const u of lf.units){ const k=u.g+"|"+u.block; if(!m.has(k)) m.set(k,{g:u.g,block:u.block,blocks:u.blocks,h0:u.h0,h1:u.h1,hosts:u.hosts,sp:u.sp,rails:[]}); m.get(k).rails.push(u.rail); } return [...m.values()]; };
   function mSpineSVG(b,i){
-    const lay=mLay(b); if(!lay) return mNoLay(b,"Mixed spine detail");
+    const lay=mLay(b); if(!lay||!lay.stripe) return mNoLay(b,"Mixed spine detail");
     const S=lay.stripe.S; i=Math.max(1,Math.min(i||1,S));
     const sp=DslotAt(S,i), sW=Daw(sp.length,150,40), sX=Dxs(sp.length,sW,40), sY=40;
     const lv=DslotAt(lay.L,1,2,lay.L), lW=Daw(lv.length,150,26), lX=Dxs(lv.length,lW,26), lY=220;
@@ -3614,7 +3631,8 @@ const Exporter = {
   }
   function mLeafSVG(b,i){
     const lay=mLay(b); if(!lay) return mNoLay(b,"Mixed shared-leaf detail");
-    i=Math.max(1,Math.min(i||1,lay.L)); const lf=lay.leaves[i-1], S=lay.stripe.S;
+    i=Math.max(1,Math.min(i||1,lay.L)); const lf=lay.leaves[i-1], S=lay.stripe?lay.stripe.S:0;
+    const ratio=lf.up>=lf.down?"1:1":lf.up?`${(lf.down/lf.up).toFixed(2)}:1 OVERSUBSCRIBED`:"no uplinks";
     const sp=Dpick(S), sX=sp.length===3?[230,450,670]:sp.map((_,k)=>450+(k-(sp.length-1)/2)*220), sY=30, lY=170, bY=330;
     const blocks=mBlocksOn(lf), shown=blocks.length<=4?blocks:[...blocks.slice(0,3),{more:blocks.length-3}];
     const bW=Daw(shown.length,200,20), bX=Dxs(shown.length,bW,20);
@@ -3624,7 +3642,7 @@ const Exporter = {
       W.push({x1:450,y1:lY,x2:sX[k],y2:sY+44,c:"var(--muted)",lab:`×${lf.k}`,tt:`leaf ${i} → spine ${g}: ${lf.k} × 800G`}); });
     s+=`<rect x="297" y="${lY-3}" width="306" height="58" rx="9" fill="none" stroke="var(--brand)" stroke-width="2.2"/>`+Dbox(300,lY,300,52,"var(--rail1)")
       +`<text x="450" y="${lY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaf ${i} of ${lay.L} — 1× ${b.ewSwitch.id}</text>`
-      +`<text x="450" y="${lY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${lf.down} host-facing + ${lf.up} uplink cages of 64 · 1:1</text>`;
+      +`<text x="450" y="${lY+38}" text-anchor="middle" fill="${lf.down+lf.up>64||lf.down>32||lf.up<lf.down?"var(--err)":"var(--muted)"}" font-size="10">${lf.down} host-facing + ${lf.up} uplink cages of 64 · ${ratio}</text>`;
     shown.forEach((u,k)=>{ const x=bX[k];
       if(u.more){ s+=Dbox(x-bW/2,bY,bW,62,"var(--muted)",true)+`<text x="${x}" y="${bY+28}" text-anchor="middle" fill="var(--muted)" font-weight="700">+${u.more} more host blocks</text><text x="${x}" y="${bY+44}" text-anchor="middle" fill="var(--muted)" font-size="9.5">same pattern — see SU views</text>`; return; }
       const G=mG(b,u.g), n=u.hosts*u.rails.length;
@@ -3635,7 +3653,7 @@ const Exporter = {
     s+=Dwires(W);
     const g1=blocks.filter(x=>x.g===1).reduce((a,x)=>a+x.hosts*x.rails.length,0), g2=blocks.filter(x=>x.g===2).reduce((a,x)=>a+x.hosts*x.rails.length,0);
     return Dsvg(bY+62+58,`Shared leaf ${i} — exact rail layout (mixed)`,s,
-      `leaf ${i}: ${g1} × ${b.ew.mg.s1}G (group 1) + ${g2} × ${b.ew.mg.s2}G (group 2) host legs = ${lf.down} cages down · ${lf.k} uplink(s) to each of ${S} spines = ${lf.up} up (1:1)`,
+      `leaf ${i}: ${g1} × ${b.ew.mg.s1}G (group 1) + ${g2} × ${b.ew.mg.s2}G (group 2) host legs = ${lf.down} cages down · ${S?`${lf.k} uplink(s) to each of ${S} spines = ${lf.up} up (${ratio})`:"no spine tier"}${b.ew.manual?" · MANUAL counts":""}`,
       `rail r of every host in a block → ONE leaf · ${lay.units.length} rail units over ${lay.L} leaves, ≤32 host cages each · app-defined (no RA)`);
   }
   function mNsLeafSVG(b){
@@ -4413,7 +4431,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="74";
+  const APP_BUILD="75";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
