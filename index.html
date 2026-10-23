@@ -2847,7 +2847,7 @@ const Exporter = {
     else { for(const a of nsAnchors) L+=`<line x1="${a.x}" y1="${nY+nH}" x2="${stC}" y2="${botY}" stroke="var(--warn)" stroke-width="1.6"/>`; }
     for(const a of nsAnchors) L+=`<line x1="${a.x}" y1="${nY+nH}" x2="${custC}" y2="${botY}" stroke="var(--ok)" stroke-width="1.6"/>`;
     if(bom.ns.spine>0){ for(const a of nsAnchors) L+=`<line x1="${a.x}" y1="${nY+nH}" x2="${nsSpC}" y2="${botY}" stroke="var(--ok)" stroke-width="1.6"/>`; }
-    else if(!nsMerged && nRow.length===2){ L+=`<line x1="${nXs[0]+nW/2}" y1="${nY+nH/2}" x2="${nXs[1]-nW/2}" y2="${nY+nH/2}" stroke="var(--ok)" stroke-width="2"/><text x="${(nXs[0]+nXs[1])/2}" y="${nY+nH/2-6}" text-anchor="middle" fill="var(--ok)" font-weight="600">ISL</text>`; }
+    else if(!nsMerged && nRow.length===2){ L+=`<line x1="${nXs[0]+nW/2}" y1="${nY+nH/2}" x2="${nXs[1]-nW/2}" y2="${nY+nH/2}" stroke="var(--ok)" stroke-width="2"/><text x="${(nXs[0]+nXs[1])/2}" y="${nY+nH/2-6}" text-anchor="middle" fill="var(--ok)" font-weight="600">${Math.floor((bom.ns.pISL||0)/2)}× 800G ISL</text>`; }
     if(isIB){
       const lp=panels[panels.length-1], lastLeaf=lp.realL[lp.realL.length-1];
       L+=`<line x1="${ufm.cx}" y1="${ufm.y}" x2="${lp.lXs[lastLeaf.k]}" y2="${lY+lH}" stroke="var(--rail3)" stroke-width="1.6"/>`;
@@ -2920,7 +2920,7 @@ const Exporter = {
     /* uplink bundles out of each leaf (to the spine layer / ISL peer) */
     for(const l of realL){ if(rtx) continue;
       L+=`<line x1="${lXs[l.k]}" y1="${lY}" x2="${lXs[l.k]}" y2="${lY-22}" stroke="var(--muted)" stroke-width="2.2"/><polygon points="${lXs[l.k]-4},${lY-20} ${lXs[l.k]+4},${lY-20} ${lXs[l.k]},${lY-28}" fill="var(--muted)"/>`;}
-    if(rtx && realL.length===2) L+=`<line x1="${lXs[realL[0].k]+75}" y1="${lY+lH/2}" x2="${lXs[realL[1].k]-75}" y2="${lY+lH/2}" stroke="var(--rail3)" stroke-width="2.4"/><text x="${(lXs[realL[0].k]+lXs[realL[1].k])/2}" y="${lY+lH/2-7}" text-anchor="middle" fill="var(--rail3)" font-weight="700">800G ISL</text>`;
+    if(rtx && realL.length===2) L+=`<line x1="${lXs[realL[0].k]+75}" y1="${lY+lH/2}" x2="${lXs[realL[1].k]-75}" y2="${lY+lH/2}" stroke="var(--rail3)" stroke-width="2.4"/><text x="${(lXs[realL[0].k]+lXs[realL[1].k])/2}" y="${lY+lH/2-7}" text-anchor="middle" fill="var(--rail3)" font-weight="700">${bom.ew.linksSS.toLocaleString()}× 800G ISL</text>`;
     for(const h of realH) for(const l of realL) L+=`<line x1="${hXs[h.k]}" y1="${hY}" x2="${lXs[l.k]}" y2="${lY+lH}" stroke="${railC[railOfI(l.s.i)%4]}" stroke-width="1.6" opacity="0.85"/>`;
     const nsMerged=bom.ns.leaf===0;
     const nsX=[250,470], oobCx=720;
@@ -3078,8 +3078,9 @@ const Exporter = {
   /* A tier frame holding instanced clickable mini-boxes: <name> 1, 2, ⋯, last.
      Returns {svg,h}. Every real box opens detail `kind` with its OWN index. */
   /* sub(i) (optional): a second line inside switch i — e.g. the GPU rails a leaf serves */
-  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl,sub)=>{
-    const fh=66, slots=w>=500?5:4, row=Dslot(total,slots), gap=8;
+  /* isl (optional): {n, c} — the two switches of a pair are joined by an ISL bundle drawn between them with its link count */
+  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl,sub,isl)=>{
+    const fh=66, slots=w>=500?5:4, row=Dslot(total,slots), pairIsl=isl&&isl.n>0&&row.length===2&&!row.some(o=>o.ell), gap=pairIsl?96:8;
     const bwi=(w-20-(row.length-1)*gap)/row.length, xs0=cx-w/2+10;
     let s=`<rect x="${cx-w/2}" y="${y}" width="${w}" height="${fh}" rx="8" fill="none" stroke="${stroke}" stroke-width="1.4"/>`
       +`<text x="${cx-w/2+10}" y="${y+14}" fill="var(--fg)" font-weight="700" font-size="10">${title}</text>`
@@ -3088,6 +3089,8 @@ const Exporter = {
       const bx=xs0+k*(bwi+gap), bcx=bx+bwi/2, by=y+22, bh=34;
       if(o.ell){ s+=Dell(bcx,by+bh/2); return; }
       const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-6)/5.4)), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
+      if(pairIsl&&k===1){ const x1=bx-gap, yy=by+bh/2, c=isl.c||stroke;
+        s+=`<g><title>ISL ${name} ${row[0].i} ↔ ${name} ${o.i}: ${isl.n} × ${isl.sp||800}G</title><line x1="${x1}" y1="${yy}" x2="${bx}" y2="${yy}" stroke="${c}" stroke-width="3"/><text x="${x1+gap/2}" y="${yy-6}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9">ISL</text><rect x="${x1+gap/2-22}" y="${yy+1}" width="44" height="14" rx="7" fill="var(--card)" stroke="${c}" stroke-width="1.1"/><text x="${x1+gap/2}" y="${yy+11.5}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9.5">×${isl.n}</text></g>`; }
       s+=Dclk(kind,`${name} ${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+(st?14:21)}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text>${st?`<text x="${bcx}" y="${by+27}" text-anchor="middle" fill="${stroke}" font-weight="600" font-size="9">${stt}</text>`:""}`,o.i,pl);
     });
     return {svg:s,h:fh};
@@ -3163,7 +3166,8 @@ const Exporter = {
     }
     s+=Dtier(450,760,y, rtx?`Leaf pair (collapsed) — 2× ${sw} · ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`Leaf switch tier — ${ew.leaf.toLocaleString()}× ${sw}`,
       rtx?2:ew.leaf/ew.planes,"leaf","leafblock","var(--rail1)",
-      rtx?`${DrailsSpan(b)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`,null,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1))).svg;
+      rtx?`${DrailsSpan(b)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`,null,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1)),
+      (rtx&&ew.linksSS>0)?{n:ew.linksSS,c:"var(--rail3)"}:null).svg;
     if(isIB){
       s+=`<line x1="830" y1="${y+33}" x2="840" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.6"/>`
         +Dbox(840,y+10,56,46,"var(--rail3)",true)
@@ -3220,7 +3224,7 @@ const Exporter = {
     const ri=DrailsInfo(b);
     const railLbl=r=>DleafLbl(b,r);     /* rails = GPUs: whole rails per leaf (Engine.railLeafMap) — a multi-rail leaf keeps each rail logically dedicated */
     const lY=52,lH=46, sY=200,sH=44;
-    const lRow=Dslot(lpb,4), lXs=Dxs(lRow.length,160,30);   // ONE plane's leaves only
+    const lRow=Dslot(lpb,4), lXs=Dxs(lRow.length,160,ew.rtx&&lpb===2?120:30);   // ONE plane's leaves only (a collapsed pair leaves room for its ISL)
     /* bottom row: ONLY the SUs cabled to this leaf — the block's own 4-node SUs,
        concatenated (SU x, x+1, ⋯, last), every one wired in. */
     const SUd=suDef(b), per=SUd.n;
@@ -3230,7 +3234,7 @@ const Exporter = {
     const realL=lRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell), realS=sRow.map((s,k)=>({s,k})).filter(o=>!o.s.ell);
     let s="";
     for(const l of realL){ if(!ew.rtx) s+=`<line x1="${lXs[l.k]}" y1="${lY}" x2="${lXs[l.k]}" y2="${lY-22}" stroke="var(--muted)" stroke-width="2.2"/><polygon points="${lXs[l.k]-4},${lY-20} ${lXs[l.k]+4},${lY-20} ${lXs[l.k]},${lY-28}" fill="var(--muted)"/>`;}
-    if(ew.rtx&&realL.length===2) s+=`<line x1="${lXs[realL[0].k]+80}" y1="${lY+lH/2}" x2="${lXs[realL[1].k]-80}" y2="${lY+lH/2}" stroke="var(--rail3)" stroke-width="2.4"/><text x="450" y="${lY-8}" text-anchor="middle" fill="var(--rail3)" font-weight="700">800G ISL (leaf pair)</text>`;
+    if(ew.rtx&&realL.length===2&&ew.linksSS>0) s+=DislLine(lXs[realL[0].k]+80,lXs[realL[1].k]-80,lY+lH/2,ew.linksSS,"var(--rail3)","ISL leaf 1 ↔ leaf 2 (collapsed pair)");
     { const W=[], pp=Math.max(1,Math.round(ew.hostLinks/b.input.nodes/ew.planes/lpb)), spd=ew.xdr?"800G XDR":isIB?"400G NDR":`${ew.railSpeed}G`;
       for(const su of realS){ const sn=su0+su.s.i, have=Math.max(0,Math.min(per,b.input.nodes-(sn-1)*per));
         for(const l of realL) W.push({x1:sXs[su.k],y1:sY,x2:lXs[l.k],y2:lY+lH,c:railC4[(l.s.i-1)%4],lab:`×${have*pp}`,
@@ -3249,7 +3253,7 @@ const Exporter = {
       `${pln?`plane ${pln} only: `:""}leaf ${pln?pln+"-":""}${li.toLocaleString()} (highlighted, ${railLbl(selRail)}) lives in block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} = ${lpb} leaf${pln?` in THIS plane`:""} + ${ew.nodesPerBlock} nodes = SU ${(su0+1).toLocaleString()}${suN>1?`–${(su0+suN).toLocaleString()}`:""}`,
       isIB?`only the SUs cabled to this leaf are shown — rail-aligned per the SuperPOD pattern (this block's ${lpb} leaves serve ONLY ${suN===1?"this SU":`these ${suN} SUs`})${pln?` · hosts attach to planes A+B`:""}`
         :(pln?`plane ${pln==="A"?"B":"A"} has its own identical ${lpb} leaves for this block — no links between planes · hosts below attach to BOTH planes`
-         :`${DrailsInfo(b).railOpt?"GPU-N of EVERY node lands on the leaf serving rail N":"not rail-optimized: host ports spread evenly"} · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + 32 up`}`));
+         :`${DrailsInfo(b).railOpt?"GPU-N of EVERY node lands on the leaf serving rail N":"not rail-optimized: host ports spread evenly"} · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + ${ew.rtx?`${ew.linksSS} ISL to its pair leaf`:"32 up"}`}`));
   }
   function spine2tSVG(b,si,pln){
     const ew=b.ew;
@@ -3349,7 +3353,7 @@ const Exporter = {
     const first=(si-1)*su.n, blk=Math.min(ew.blocks,Math.floor(first/ew.nodesPerBlock)+1);
     const tY=26, hY=176, hH=54;
     let s=Dbox(130,tY,640,46,"var(--rail1)",true)
-      +`<text x="450" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Its leaf block — block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} (${ew.leavesPerBlock*ew.planes} rail leaves${ew.planes===2?", planes A+B":""}) <tspan fill="var(--muted)" font-weight="400">(reference)</tspan></text>`
+      +`<text x="450" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Its leaf block — block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} (${ew.leavesPerBlock*ew.planes} ${ew.rtx?`leaves, collapsed pair + ${ew.linksSS}×800G ISL`:"rail leaves"}${ew.planes===2?", planes A+B":""}) <tspan fill="var(--muted)" font-weight="400">(reference)</tspan></text>`
       +`<text x="450" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="10">expand “Leaf switch tier” in the overview for the inside of this block</text>`;
     const hRow=Dslot(su.n,4), hXs=Dxs(hRow.length,176,22), SW=[];
     hRow.forEach((o,k)=>{ if(o.ell){s+=Dell(hXs[k],hY+hH/2);return;}
@@ -3604,6 +3608,8 @@ const Exporter = {
   /* ======== N-S & OOB views — E-W detail parity. Every box, wire and ×n badge comes from the engine's exact
      per-leaf / per-switch layouts (Engine.nsLayout → b.ns.layout, Engine.oobLayout → b.oob.layout), for single
      and mixed host groups, any scale, any NIC / switch model. ======== */
+  /* ISL bundle between two side-by-side switches: thick line, 'ISL' label and a ×n badge centred in the gap */
+  const DislLine=(xa,xb,yy,n,c,tt,sp=800)=>{ const xm=(xa+xb)/2; return `<g><title>${tt}: ${n} × ${sp}G</title><line x1="${xa}" y1="${yy}" x2="${xb}" y2="${yy}" stroke="${c}" stroke-width="3"/><text x="${xm}" y="${yy-7}" text-anchor="middle" fill="${c}" font-weight="700" font-size="10">ISL</text><rect x="${xm-22}" y="${yy+2}" width="44" height="15" rx="7.5" fill="var(--card)" stroke="${c}" stroke-width="1.1"/><text x="${xm}" y="${yy+13}" text-anchor="middle" fill="${c}" font-weight="700" font-size="10">×${n}</text></g>`; };
   const Nlay=b=>(b.ns&&!b.ns.merged&&b.ns.layout&&b.ns.layout.leaves.length)?b.ns.layout:null;
   const Olay=b=>(b.oob&&b.oob.layout&&b.oob.layout.switches.length)?b.oob.layout:null;
   const Ncol=(b,g)=>b.mixed?(g===2?"var(--rail4)":"var(--rail2)"):"var(--ok)";
@@ -3635,8 +3641,9 @@ const Exporter = {
       y+=46; leafBot=y;
     } else {
       const t=Dtier(450,760,y,`N-S leaf switch tier — ${ns.leaf.toLocaleString()}× ${sw} (${lay.P} pair${lay.P>1?"s":""})`,ns.leaf,"leaf",K("nsleaf"),"var(--ok)",
-        `${lay.leaves.some(l=>l.isl)?`ISL ×${lay.leaves[0].isl} · `:""}hosts ${(Ngrp(b,1).pn>=2)?"dual-homed":"single-homed"} to their pair`,null,
-        li=>{ const l=lay.leaves[li-1]; return `pair ${l.pair} · ${NhTxt(b,lay.pairs[l.pair-1].hosts)}`; });
+        `${lay.leaves.some(l=>l.isl)?`leaf pair joined by ${lay.leaves[0].isl}×800G ISL · `:""}hosts ${(Ngrp(b,1).pn>=2)?"dual-homed":"single-homed"} to their pair`,null,
+        li=>{ const l=lay.leaves[li-1]; return `pair ${l.pair} · ${NhTxt(b,lay.pairs[l.pair-1].hosts)}`; },
+        (!ns.spine&&lay.leaves[0].isl>0)?{n:lay.leaves[0].isl,c:"var(--ok)"}:null);
       s+=t.svg; y+=t.h; leafBot=y;
     }
     if(b.mixed){
@@ -3659,7 +3666,7 @@ const Exporter = {
     const ns=b.ns, lay=Nlay(b); if(!lay) return nsMergedSVG(b,li);
     li=Math.max(1,Math.min(li||1,lay.L)); const lf=lay.leaves[li-1], pr=lay.pairs[lf.pair-1], PL=pr.leaves.map(x=>lay.leaves[x-1]);
     const sY=30, lY=ns.spine>0?170:70, hY=lY+160; let s="", W=[];
-    const lX=PL.length===2?[300,600]:[450], lW=PL.length===2?250:300;
+    const lX=PL.length===2?[290,610]:[450], lW=PL.length===2?230:300;
     if(ns.spine>0){
       const spIds=NleafSpines(ns,lf), shown=spIds.length<=4?spIds:[spIds[0],spIds[1],null,spIds[spIds.length-1]];
       const sX=Dxs(shown.length,150,30);
@@ -3672,7 +3679,7 @@ const Exporter = {
       s+=Dbox(x-lW/2,lY,lW,58,"var(--ok)")+`<text x="${x}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S leaf ${l.leaf} · pair ${l.pair} (${l.side})</text>`
         +`<text x="${x}" y="${lY+35}" text-anchor="middle" fill="${l.down>l.downCap||l.used>64?"var(--err)":"var(--muted)"}" font-size="10">${l.down} down + ${ns.spine>0?`${l.up} up`:`${l.isl} ISL`} of 64 · ${b.nsSwitch.id}</text>`
         +`<text x="${x}" y="${lY+50}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${ns.spine>0?(l.up>=l.down?"1:1 northbound":`${(l.down/Math.max(1,l.up)).toFixed(2)}:1 OVERSUBSCRIBED`):"pair interconnect via ISL"}</text>`; });
-    if(!ns.spine&&PL.length===2&&lf.isl) W.push({x1:lX[0]+lW/2,y1:lY+29,x2:lX[1]-lW/2,y2:lY+29,c:"var(--ok)",sw:2.4,lab:`×${lf.isl}`,tt:`ISL leaf ${PL[0].leaf} ↔ leaf ${PL[1].leaf}: ${lf.isl} × 800G`});
+    if(!ns.spine&&PL.length===2&&lf.isl) s+=DislLine(lX[0]+lW/2,lX[1]-lW/2,lY+29,lf.isl,"var(--ok)",`ISL N-S leaf ${PL[0].leaf} ↔ leaf ${PL[1].leaf}`);
     /* the pair's hosts, one box per SU */
     const sus=pr.sus, row=sus.length<=4?sus.map((x,k)=>({x,k})):[{x:sus[0]},{x:sus[1]},{ell:true},{x:sus[sus.length-1]}];
     const hX=Dxs(row.length,180,20);
@@ -3729,9 +3736,11 @@ const Exporter = {
     /* leaves this SU's hosts use (normally one pair) */
     const pairOf=hn=>lay.pairs.find(p=>p.sus.some(x=>x.g===g&&x.h0<=hn&&hn<=x.h1));
     const lvIds=[...new Set(Array.from({length:present},(_,k)=>pairOf(h0+k)).filter(Boolean).flatMap(p=>p.leaves))].sort((a,b)=>a-b);
-    const dsp=lvIds.length<=4?lvIds:[lvIds[0],lvIds[1],null,lvIds[lvIds.length-2],lvIds[lvIds.length-1]], lW=Daw(dsp.length,dsp.length>2?180:240,30), lX=Dxs(dsp.length,lW,30);
+    const dsp=lvIds.length<=4?lvIds:[lvIds[0],lvIds[1],null,lvIds[lvIds.length-2],lvIds[lvIds.length-1]], lW=Daw(dsp.length,dsp.length>2?180:240,dsp.length===2?100:30), lX=Dxs(dsp.length,lW,dsp.length===2?100:30);
     dsp.forEach((id,k)=>{ if(id==null){ s+=Dell(lX[k],tY+25); return; } const l=lay.leaves[id-1];
       s+=Dbox(lX[k]-lW/2,tY,lW,50,"var(--ok)")+`<text x="${lX[k]}" y="${tY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">N-S leaf ${id} · pair ${l.pair} (${l.side})</text><text x="${lX[k]}" y="${tY+37}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${b.nsSwitch.id} · ${l.down}↓ of ${l.downCap}</text>`; });
+    if(!ns.spine&&dsp.length===2&&dsp[0]!=null&&dsp[1]!=null&&lay.leaves[dsp[0]-1].isl>0&&lay.leaves[dsp[0]-1].pair===lay.leaves[dsp[1]-1].pair){ const n=lay.leaves[dsp[0]-1].isl;
+      s+=DislLine(lX[0]+lW/2,lX[1]-lW/2,tY+25,n,"var(--ok)",`ISL N-S leaf ${dsp[0]} ↔ leaf ${dsp[1]}`); }
     hRow.forEach((o,k)=>{ if(o.ell){ s+=Dell(hXs[k],hY+hH/2); return; } const hn=h0+o.i-1, pl=hn>G.nodes;
       if(!pl){ const p=pairOf(hn), sp=NperHost(G.pn,hn); (p?p.leaves:[]).forEach((id,j)=>{ const n=p.leaves.length===2?sp[j]:sp[0]+sp[1]; const k2=dsp.indexOf(id); if(!n||k2<0) return;
         W.push({x1:hXs[k]+(j?14:-14),y1:hY,x2:lX[k2],y2:tY+50,c,lab:`×${n}`,tt:`${b.mixed?`group ${g} `:""}host ${hn} → N-S leaf ${id}: ${n} × ${G.sp}GbE`}); }); }
@@ -4679,7 +4688,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="80";
+  const APP_BUILD="81";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
