@@ -3889,7 +3889,7 @@ const Exporter = {
     s+=sp.svg; y+=sp.h;
     s+=Dtrunk(y,y+24,`${m.links800.toLocaleString()}×800G leaf↔spine`); y+=24;
     const layO=mLay(b), lfSub=layO?(li=>{ const us=(layO.leaves[li-1]||{units:[]}).units, ro=us.filter(u=>u.railOpt!==false), nr=us.filter(u=>u.railOpt===false);
-        if(!us.length) return "spare"; return ro.length?mRails(ro.flatMap(u=>u.rails))+(nr.length?" + ports":""):`host ${DportTxt(nr.flatMap(u=>u.ports))}`; }):null;
+        if(!us.length) return "spare"; return ro.length?mRails(ro.flatMap(u=>u.rails)):`host ${DportTxt(nr.flatMap(u=>u.ports))}`; }):null;   /* rails only; non-rail host ports are detailed in the leaf view */
     const lf=Dtier(450,700,y,`Shared leaf tier — ${b.ew.leaf.toLocaleString()}× ${b.ewSwitch.id}`,b.ew.leaf,"Leaf",K("mleaf"),"var(--rail1)",`${m.downG.toLocaleString()}G host bandwidth`,null,lfSub);
     s+=lf.svg; const leafBot=y+lf.h; y=leafBot+12;
     s+=`<text x="265" y="${y+12}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">Host group 1 — ${i.nodes.toLocaleString()}× ${gl1}</text>`
@@ -4547,7 +4547,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="78";
+  const APP_BUILD="79";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
