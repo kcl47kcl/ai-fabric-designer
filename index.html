@@ -2998,7 +2998,8 @@ const Exporter = {
   const Daw=(n,wmax,gap)=>Math.min(wmax,Math.floor((840-(n-1)*gap)/n));
   /* A tier frame holding instanced clickable mini-boxes: <name> 1, 2, ⋯, last.
      Returns {svg,h}. Every real box opens detail `kind` with its OWN index. */
-  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl)=>{
+  /* sub(i) (optional): a second line inside switch i — e.g. the GPU rails a leaf serves */
+  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl,sub)=>{
     const fh=66, slots=w>=500?5:4, row=Dslot(total,slots), gap=8;
     const bwi=(w-20-(row.length-1)*gap)/row.length, xs0=cx-w/2+10;
     let s=`<rect x="${cx-w/2}" y="${y}" width="${w}" height="${fh}" rx="8" fill="none" stroke="${stroke}" stroke-width="1.4"/>`
@@ -3007,7 +3008,8 @@ const Exporter = {
     row.forEach((o,k)=>{
       const bx=xs0+k*(bwi+gap), bcx=bx+bwi/2, by=y+22, bh=34;
       if(o.ell){ s+=Dell(bcx,by+bh/2); return; }
-      s+=Dclk(kind,`${name} ${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+21}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text>`,o.i,pl);
+      const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-6)/5.4)), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
+      s+=Dclk(kind,`${name} ${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+(st?14:21)}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text>${st?`<text x="${bcx}" y="${by+27}" text-anchor="middle" fill="${stroke}" font-weight="600" font-size="9">${stt}</text>`:""}`,o.i,pl);
     });
     return {svg:s,h:fh};
   };
@@ -3037,7 +3039,7 @@ const Exporter = {
     for(const c of cols) s+=trunk(c.cx,y,y+24);
     s+=`<text x="${cols[0].cx+14}" y="${y+16}" fill="var(--muted)" font-size="9">${Math.ceil((ew.links800??ew.links400)/2).toLocaleString()}×${ew.ssLinkG}G/plane</text>`;
     y+=24;
-    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${DrailsSpan(b)} · plane ${c.pl}`,c.pl).svg;
+    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${DrailsSpan(b)} · plane ${c.pl}`,c.pl,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1))).svg;
     if(isIB){
       s+=`<line x1="${cols[0].cx+bw/2}" y1="${y+33}" x2="414" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
         +`<line x1="486" y1="${y+33}" x2="${cols[1].cx-bw/2}" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
@@ -3082,7 +3084,7 @@ const Exporter = {
     }
     s+=Dtier(450,760,y, rtx?`Leaf pair (collapsed) — 2× ${sw} · ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`Leaf switch tier — ${ew.leaf.toLocaleString()}× ${sw}`,
       rtx?2:ew.leaf/ew.planes,"leaf","leafblock","var(--rail1)",
-      rtx?`${DleafLbl(b,0)} | ${DleafLbl(b,1)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`).svg;
+      rtx?`${DrailsSpan(b)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`,null,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1))).svg;
     if(isIB){
       s+=`<line x1="830" y1="${y+33}" x2="840" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.6"/>`
         +Dbox(840,y+10,56,46,"var(--rail3)",true)
@@ -3886,7 +3888,9 @@ const Exporter = {
     const sp=Dtier(450,560,y,`Spine tier — ${b.ew.spine.toLocaleString()}× ${b.ewSwitch.id}`,b.ew.spine,"Spine",K("mspine"),"var(--muted)",`${m.links800.toLocaleString()}×800G · 1:1`);
     s+=sp.svg; y+=sp.h;
     s+=Dtrunk(y,y+24,`${m.links800.toLocaleString()}×800G leaf↔spine`); y+=24;
-    const lf=Dtier(450,700,y,`Shared leaf tier — ${b.ew.leaf.toLocaleString()}× ${b.ewSwitch.id}`,b.ew.leaf,"Leaf",K("mleaf"),"var(--rail1)",`${m.downG.toLocaleString()}G host bandwidth`);
+    const layO=mLay(b), lfSub=layO?(li=>{ const us=(layO.leaves[li-1]||{units:[]}).units, ro=us.filter(u=>u.railOpt!==false), nr=us.filter(u=>u.railOpt===false);
+        if(!us.length) return "spare"; return ro.length?mRails(ro.flatMap(u=>u.rails))+(nr.length?" + ports":""):`host ${DportTxt(nr.flatMap(u=>u.ports))}`; }):null;
+    const lf=Dtier(450,700,y,`Shared leaf tier — ${b.ew.leaf.toLocaleString()}× ${b.ewSwitch.id}`,b.ew.leaf,"Leaf",K("mleaf"),"var(--rail1)",`${m.downG.toLocaleString()}G host bandwidth`,null,lfSub);
     s+=lf.svg; const leafBot=y+lf.h; y=leafBot+12;
     s+=`<text x="265" y="${y+12}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">Host group 1 — ${i.nodes.toLocaleString()}× ${gl1}</text>`
       +`<text x="265" y="${y+25}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${m.ports1.toLocaleString()}×${m.s1}G via ${i.ewnicn}× ${i.ewnic} per host</text>`
@@ -3899,7 +3903,7 @@ const Exporter = {
     y=suY+44;
     y+=10;
     return Dsvg(y+40,"Mixed-group shared E-W fabric",s,
-      "two host groups share one E-W fabric — rail r of a host block → one leaf · 1:1 · single plane · Ethernet",
+      "two host groups share one E-W fabric — rail k (GPU k) of every host → the same leaf · 1:1 · single plane · Ethernet",
       "no published NVIDIA RA covers mixed GPU fabrics — flagged; NVIDIA-reviewed design required before build");
   }
   function genMixedNsOv(b,live){
@@ -4543,7 +4547,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="77";
+  const APP_BUILD="78";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
