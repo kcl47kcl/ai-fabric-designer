@@ -840,10 +840,13 @@ const Engine = (() => {
       Returns [{rails:[k…], ports:[p…]}] (1-based). */
   function railMap(gph,P){
     gph=Math.max(1,Math.floor(gph)||1); P=Math.max(1,Math.floor(P)||1); const out=[];
-    if(P>=gph){ for(let k=1;k<=gph;k++) out.push({rails:[k],ports:[]}); for(let p=0;p<P;p++) out[Math.floor(p*gph/P)].ports.push(p+1); }
-    else for(let p=0;p<P;p++){ const a=Math.floor(p*gph/P)+1, z=Math.floor((p+1)*gph/P), rs=[]; for(let k=a;k<=z;k++) rs.push(k); out.push({rails:rs,ports:[p+1]}); }
+    if(P>=gph){ for(let k=1;k<=gph;k++) out.push({rails:[k],ports:[]}); for(let p=0;p<P;p++) out[Math.floor(p*gph/P)].ports.push(p+1); return out; }
+    for(let p=0;p<P;p++){ const a=Math.floor(p*gph/P)+1, z=Math.floor((p+1)*gph/P), rs=[]; for(let k=a;k<=z;k++) rs.push(k); out.push({rails:rs,ports:[p+1]}); }
     return out;
   }
+  /** RAIL-OPTIMIZED only when the host has ONE E-W NIC PER GPU (NIC count = GPUs per host). Otherwise the host's
+      E-W ports are NOT rails: they are spread evenly over the leaves (portLeafMap) and labeled as host ports. */
+  const isRailOpt=(nicN,gph)=>Math.floor(nicN)===Math.floor(gph);
   /** RAIL HOME — the ONE rule for which leaf (of L) serves GPU rail k of a gph-GPU host:
         L ≥ gph            ⇒ rail k owns leaves [⌊(k−1)L/gph⌋, ⌊kL/gph⌋)      (8 leaves: rail k → leaf k)
         L < gph, ≤2 rails/leaf ⇒ STRIDE: leaf (k−1) mod L                  (4 leaves: 1+5, 2+6, 3+7, 4+8 — RA pairing)
@@ -861,7 +864,7 @@ const Engine = (() => {
       every port bundle goes to the rail home of its rails (railHome). A bundle whose ports outnumber one leaf's
       share (e.g. 1 IB port/leaf, 2 ports/GPU) spreads over its rail's own home leaves, port by port. */
   function railLeafMap(gph,P,lpb){
-    const m=railMap(gph,P); lpb=Math.max(1,Math.floor(lpb)||1); const ppl=P/lpb;
+    lpb=Math.max(1,Math.floor(lpb)||1); const m=railMap(gph,P), ppl=P/lpb;
     const build=leafOf=>{ const leaves=Array.from({length:lpb},()=>({rails:[],ports:[],split:false}));
       m.forEach((x,b)=>x.ports.forEach((p,q)=>{ const [j,sp]=leafOf(x,b,q), L=leaves[j];
         for(const r of x.rails) if(!L.rails.includes(r)) L.rails.push(r); L.ports.push(p); if(sp) L.split=true; }));
@@ -889,22 +892,26 @@ const Engine = (() => {
     return `${gph} rails (= ${gph} GPUs) · ${m.every(x=>x.rails.length===m[0].rails.length)?`each port carries ${m[0].rails.length} rails`:`${P} ports carry ${gph} rails`}`; }
 
   function mixedLayout(groups,opt={}){
-    const units=[];
-    for(const G of groups){
-      const gph=G.gph||G.rails, P=G.ports||G.rails, bundles=railMap(gph,P), legsMax=Math.max(...bundles.map(x=>x.ports.length));
-      const B=Math.max(1,Math.floor(16*800/(G.sp*legsMax))), nb=ceil(G.nodes/B);
-      for(let k=0;k<nb;k++){ const h0=k*B+1, h1=Math.min(G.nodes,(k+1)*B), hosts=h1-h0+1;
-        for(const x of bundles) units.push({g:G.g,block:k+1,blocks:nb,h0,h1,hosts,gph,rails:x.rails,rail:x.rails[0],ports:x.ports,legs:x.ports.length,sp:G.sp,bw:hosts*x.ports.length*G.sp}); } }
+    /* rail units per leaf count L: a port carrying several rails groups them by their rail home over L leaves (railMap) */
+    const mkUnits=L=>{ const us=[];
+      for(const G of groups){
+        const gph=G.gph||G.rails, P=G.ports||G.rails, ro=G.railOpt!==false;
+        /* rail-optimized group: one unit per GPU rail (its ports); otherwise one unit per host port (no rails) */
+        const bundles=ro?railMap(gph,P):Array.from({length:P},(_,p)=>({rails:[],ports:[p+1]})), legsMax=Math.max(...bundles.map(x=>x.ports.length));
+        const B=Math.max(1,Math.floor(16*800/(G.sp*legsMax))), nb=ceil(G.nodes/B);
+        for(let k=0;k<nb;k++){ const h0=k*B+1, h1=Math.min(G.nodes,(k+1)*B), hosts=h1-h0+1;
+          for(const x of bundles) us.push({g:G.g,block:k+1,blocks:nb,h0,h1,hosts,gph,P,railOpt:ro,rails:x.rails,rail:ro?x.rails[0]:0,port:x.ports[0],ports:x.ports,legs:x.ports.length,sp:G.sp,bw:hosts*x.ports.length*G.sp}); } }
+      return us; };
+    let units=mkUnits(0);
     /* leaf cages: legs of the SAME group on the same leaf share twin-port cages (2×400G / 4×200G per 800G cage) */
     const cagesOf=us=>{ const g={}; for(const u of us) g[u.g]=(g[u.g]||0)+u.bw; return Object.values(g).reduce((a,bw)=>a+ceil(bw/800),0); };
     const totBW=units.reduce((a,u)=>a+u.bw,0);
-    const order=units.map((u,i)=>i).sort((a,b)=>units[b].bw-units[a].bw||a-b);   /* largest units first, stable */
+    const orderOf=us=>us.map((u,i)=>i).sort((a,b)=>us[b].bw-us[a].bw||a-b);   /* largest units first, stable */
     /* RAIL HOME (railHome): rail k of EVERY host of every group → the same leaf set — L ≥ gph: own leaf/leaves;
        L < gph: 2 rails/leaf stride (1+5, 2+6 …), >2 rails/leaf contiguous (1–4, 5–8). Shared leaf = logically dedicated rail partitions. */
-    const home=(u,L)=>{ if(L<u.gph) return railHome(u.rails[0],u.gph,L);   /* a port carrying several rails rides its first rail's home */
-      const h=u.rails.map(r=>railHome(r,u.gph,L)); return [Math.min(...h.map(x=>x[0])),Math.max(...h.map(x=>x[1]))]; };
-    const sortU=us=>us.sort((a,b)=>a.g-b.g||a.block-b.block||a.rail-b.rail);
-    const place=(L,cap,aligned)=>{ const bucket=Array.from({length:L},()=>[]), load=new Array(L).fill(0);
+    const home=(u,L)=>u.railOpt?railHome(u.rails[0],u.gph,L):railHome(u.port,u.P,L);   /* GPU rail k → its rail home; a non-rail host port p → spread evenly the same way over the leaves */   /* a multi-rail port's rails share one home by construction (railMap with L); otherwise it rides its first rail's home */
+    const sortU=us=>us.sort((a,b)=>a.g-b.g||a.block-b.block||a.rail-b.rail||a.port-b.port);
+    const place=(L,cap,aligned)=>{ units=mkUnits(L); const order=orderOf(units); const bucket=Array.from({length:L},()=>[]), load=new Array(L).fill(0);
       for(const i of order){ const u=units[i]; const [a,z]=aligned?home(u,L):[0,L]; let best=-1, bl=1e18;
         for(let j=a;j<z;j++){ if(cap&&cagesOf([...bucket[j],u])>32) continue; if(load[j]<bl){ bl=load[j]; best=j; } }
         if(best<0) return null; bucket[best].push(u); load[best]+=u.bw; u.leaf=best+1; }
@@ -1357,11 +1364,11 @@ const Engine = (() => {
       chk(lay.stripe.spineDown<=R, `spine down ${lay.stripe.spineDown} > ${R}`);
       chk(lay.leaves.reduce((a,l)=>a+l.up,0)*1===ew.links800, "Σ leaf uplinks ≠ leaf↔spine links");
       /* rail alignment: every (group, block, rail) unit sits on exactly one leaf */
-      chk(new Set(lay.units.map(u=>`${u.g}|${u.block}|${u.rail}`)).size===lay.units.length, "a rail unit is split across leaves");
+      chk(new Set(lay.units.map(u=>`${u.g}|${u.block}|${u.rail}|${u.port}`)).size===lay.units.length, "a rail unit is split across leaves");
       /* RAILS = GPUs: each host block carries rails 1…gph exactly once, each rail on ONE leaf, every port used once */
-      const blk={}; for(const u of lay.units){ const k=u.g+"|"+u.block; (blk[k]=blk[k]||{gph:u.gph,rails:[],ports:0,G:u.g}); blk[k].rails.push(...u.rails); blk[k].ports+=u.legs; }
+      const blk={}; for(const u of lay.units){ const k=u.g+"|"+u.block; (blk[k]=blk[k]||{gph:u.gph,rails:[],ports:0,G:u.g,ro:u.railOpt}); blk[k].rails.push(...u.rails); blk[k].ports+=u.legs; }
       for(const [k,x] of Object.entries(blk)){ const rs=[...x.rails].sort((a,b)=>a-b);
-        chk(rs.length===x.gph&&rs.every((r,i)=>r===i+1), `group ${x.G} block ${k.split("|")[1]}: rails ${rs.join(",")} ≠ 1…${x.gph} (GPUs per host)`);
+        if(x.ro) chk(rs.length===x.gph&&rs.every((r,i)=>r===i+1), `group ${x.G} block ${k.split("|")[1]}: rails ${rs.join(",")} ≠ 1…${x.gph} (GPUs per host)`);
         const gd=(ew.mg.groupsDef||[]).find(d=>d.g===x.G); if(gd) chk(x.ports===gd.ports, `group ${x.G}: ${x.ports} ports on rails ≠ ${gd.ports} host ports`); }
       return v; }
     if(ew.manual) return v;                              // manual designs carry their own rule flags
@@ -1424,7 +1431,7 @@ const Engine = (() => {
     if(!ns.spine&&!ns.sspine) chk(ns.leaf<=2, `${ns.leaf} N-S leaves with no spine — leaf pairs would be disconnected islands`);
     return v;
   }
-  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS,mixedLayout,railMap,railHome,railLeafMap,railTxt,railMapTxt};
+  return {sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS,mixedLayout,railMap,railHome,railLeafMap,railTxt,railMapTxt,isRailOpt};
 })();
 
 /* =====================================================================
@@ -1470,7 +1477,7 @@ function buildBOM(input){
   if(srv){
     if(!srv.gpus.includes(input.gpu)) flags.push(V.flag(`${gpu.label} in ${srv.label}`,`this GPU is not in the ${srv.oem} documented configurations for the platform (${srv.gpus.join(", ")})`));
     if(inc.ew && srv.ewNics && !srv.ewNics.includes(input.ewnic)) flags.push(V.flag(`${input.ewnic} E-W NIC in ${srv.label}`,`not in the platform's documented E-W NIC set (${srv.ewNics.join(", ")})${srv.integrated?" — the E-W NICs are baseboard-integrated CX-8 on this platform":""}; needs ${srv.oem} configuration validation`));
-    if(inc.ew && srv.ewNicN && input.ewnicn!==srv.ewNicN) flags.push(V.flag(`${input.ewnicn}× E-W NICs/host in ${srv.label}`,`the platform documents ${srv.ewNicN}× (1 per GPU)${srv.integrated?", integrated on the HGX baseboard":""}`));
+    if(inc.ew && srv.ewNicN && input.ewnicn!==srv.ewNicN) flags.push(V.flag(`${input.ewnicn}× E-W NICs/host in ${srv.label}`,`the platform documents ${srv.ewNicN}× (${srv.ewNicN===input.gph?"1 per GPU":`${input.gph/srv.ewNicN} GPUs per NIC`})${srv.integrated?", integrated on the HGX baseboard":""}`));
     lines.push(V.line({fabric:"ew",sku:srv.sku||"—",desc:srv.label+(srv.note?` — ${srv.note}`:""),role:"GPU server",
       qty:input.nodes, math:`${input.nodes} hosts`,
       status:srv.validated?(srv.raValidated?"VALIDATED":"VERIFIED"):"UNVALIDATED",needs:srv.needs||null,cites:srv.cites||[]}));
@@ -1499,7 +1506,7 @@ function buildBOM(input){
     if(g2.srv){
       if(g2.srv.gpus&&!g2.srv.gpus.includes(g2.gpu.id)) flags.push(V.flag(`${g2.gpu.label} in ${g2.srv.label} (group 2)`,`this GPU is not in the ${g2.srv.oem} documented configurations for the platform (${g2.srv.gpus.join(", ")})`));
       if(g2.srv.ewNics&&!g2.srv.ewNics.includes(g2.ewn.id)) flags.push(V.flag(`${g2.ewn.id} E-W NIC in ${g2.srv.label} (group 2)`,`not in the platform's documented E-W NIC set (${g2.srv.ewNics.join(", ")}); needs ${g2.srv.oem} configuration validation`));
-      if(g2.srv.ewNicN&&g2.ewnicn!==g2.srv.ewNicN) flags.push(V.flag(`${g2.ewnicn}× E-W NICs/host in ${g2.srv.label} (group 2)`,`the platform documents ${g2.srv.ewNicN}× (1 per GPU)`));
+      if(g2.srv.ewNicN&&g2.ewnicn!==g2.srv.ewNicN) flags.push(V.flag(`${g2.ewnicn}× E-W NICs/host in ${g2.srv.label} (group 2)`,`the platform documents ${g2.srv.ewNicN}× (${g2.srv.ewNicN===g2.gph?"1 per GPU":`${g2.gph/g2.srv.ewNicN} GPUs per NIC`})`));
       lines.push(V.line({fabric:"ew",sku:g2.srv.sku||"—",desc:g2.srv.label+(g2.srv.note?` — ${g2.srv.note}`:"")+" [host group 2]",role:"GPU server",
         qty:g2.nodes, math:`${g2.nodes} hosts (group 2)`,
         status:g2.srv.validated?(g2.srv.raValidated?"VALIDATED":"VERIFIED"):"UNVALIDATED",needs:g2.srv.needs||null,cites:g2.srv.cites||[]}));
@@ -1526,13 +1533,16 @@ function buildBOM(input){
     if(/single cage, 2×400G/.test(n.ff||"")&&portsPerNic>=2){ twinFltUsed=true; return {o:C.optics.twin800flt,per:2,twin:true}; }
     return {o:(n.ff||"").startsWith("OSFP")?C.optics.osfp_400:C.optics.q112_400,per:1,twin:false};
   };
+  /* rail optimization needs ONE E-W NIC per GPU — anything else is a plain (non-rail) leaf-spine attach */
+  if(inc.ew && !E.isRailOpt(input.ewnicn,input.gph)) notes.push(`E-W is NOT rail-optimized${mixed?" for host group 1":""}: ${input.ewnicn} E-W NIC(s) for ${input.gph} GPUs per host — rail optimization needs one E-W NIC per GPU, so the host's ports are spread evenly over the leaves (any-to-any via the spines) and labeled as host ports, not rails.`);
+  if(inc.ew && mixed && !E.isRailOpt(g2.ewnicn,g2.gph)) notes.push(`E-W is NOT rail-optimized for host group 2: ${g2.ewnicn} E-W NIC(s) for ${g2.gph} GPUs per host — its ports are spread evenly over the shared leaves.`);
   if(effPorts!==ewn.ports&&!ibXdrNic) notes.push(`${ewn.id} on ${gpu.label}: ${ewn.onePortNote}.`);
   let ew = mixed? (()=>{   /* shared 2-tier fabric with the deterministic rail-aligned mixed layout (E.mixedLayout) */
     const r1=input.ewnicn*effPorts, r2=g2.ewnicn*g2.eff;
     const ports1=input.nodes*r1, s1=ewn.speedG||400;
     const ports2=g2.nodes*r2, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
-    const groupsDef=[{g:1,nodes:input.nodes,gph:input.gph,ports:r1,sp:s1},{g:2,nodes:g2.nodes,gph:g2.gph,ports:r2,sp:s2}];   /* rails = GPUs per host; ports map onto them (E.railMap) */
+    const groupsDef=[{g:1,nodes:input.nodes,gph:input.gph,ports:r1,sp:s1,railOpt:E.isRailOpt(input.ewnicn,input.gph)},{g:2,nodes:g2.nodes,gph:g2.gph,ports:r2,sp:s2,railOpt:E.isRailOpt(g2.ewnicn,g2.gph)}];   /* rails = GPUs per host; ports map onto them (E.railMap) */
     const lay=E.mixedLayout(groupsDef);
     if(!lay.ok) return {mixed:true,infeasible:lay.why,tier:2,planes:1,proto:"eth",leaf:0,spine:0,sspine:0,mg:{downG,ports1,s1,ports2,s2,links800:0,twinHost:0}};
     const leaf=lay.L, spine=lay.stripe.S, links800=lay.stripe.links;
@@ -1540,7 +1550,7 @@ function buildBOM(input){
       leaf,spine,sspine:0,coreGroups:0,coreGroupSize:0,pods:0,blocks:1,leavesPerBlock:leaf,nodesPerBlock:totalN,
       railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:links800,
       xH:ports1+ports2,xLS:lay.downCages,xSS:2*links800,cH:ports1+ports2,cSS:2*links800,splitters:0,legsPerCage:2,overCore:false,stripe:lay.stripe,
-      spineBasis:`shared 2-tier fabric, rail-aligned mixed layout (rail = GPU: group 1 ${E.railMapTxt(input.gph,r1)}; group 2 ${E.railMapTxt(g2.gph,r2)}): ${lay.units.length} rail units (group × host block × GPU rail) placed ${lay.aligned?"on their rail-home leaves (rail k of every host → the same leaf; a leaf with several rails keeps each as a logically dedicated partition)":"balanced (rail-home placement exceeded 32 cages/leaf at this size — each rail still whole on one leaf)"} over ${leaf} leaves (≤32 host-facing cages each, 1:1); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
+      spineBasis:`shared 2-tier fabric, rail-aligned mixed layout (group 1: ${groupsDef[0].railOpt?`rail-optimized, ${E.railMapTxt(input.gph,r1)}`:`NOT rail-optimized — ${input.ewnicn} NICs for ${input.gph} GPUs, ${r1} ports spread evenly`}; group 2: ${groupsDef[1].railOpt?`rail-optimized, ${E.railMapTxt(g2.gph,r2)}`:`NOT rail-optimized — ${g2.ewnicn} NICs for ${g2.gph} GPUs, ${r2} ports spread evenly`}): ${lay.units.length} rail units (group × host block × GPU rail) placed ${lay.aligned?"on their rail-home leaves (rail k of every host → the same leaf; a leaf with several rails keeps each as a logically dedicated partition)":"balanced (rail-home placement exceeded 32 cages/leaf at this size — each rail still whole on one leaf)"} over ${leaf} leaves (≤32 host-facing cages each, 1:1); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
       mg:{downG,links800,ports1,s1,ports2,s2,r1,r2,twinHost:lay.downCages,layout:lay,groupsDef},
       proof:{nodesInBlock:totalN,downG,upG:links800*800,ratio:`${(links800*800/downG>=1?"≥1":"<1")}:1 (non-blocking)`,cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu);
@@ -2427,6 +2437,7 @@ const Exporter = {
   /* RA mode: every downstream choice locked to the RA-validated path. Custom: everything opens. */
   function applyDmode(){
     const ra = state.dmode==="ra";
+    { const srv0=CATALOG.servers.find(x=>x.id===$("server").value); $("ewnicn").value=(ra&&srv0&&srv0.ewNicN)||defaultNicCount(); }
     $("dmode-help").textContent = ra ? "" : "Custom mode — off-RA selections stay available and are validated end to end, with deviations flagged.";
     ["ewoem","nsoem","stoem","ooboem"].forEach(id=>{ if(ra) $(id).value="NVIDIA"; $(id).disabled=ra; });
     ["ewswmode","nsswmode","stswmode","oobswmode"].forEach(id=>{ if(ra) setSeg(id,"auto"); [...$(id).children].forEach(b=>{ if(b.dataset.v==="manual") b.disabled=ra; }); });
@@ -2469,7 +2480,7 @@ const Exporter = {
     if(g2gpu){ $("g2gph").value=(g2gpu.gph&&g2gpu.gph[0])||8;
       const legs=g2gpu.ewLegs||((g2gpu.gph&&g2gpu.gph[0])||8);
       const nn=CATALOG.nics.find(n=>n.id===$("g2ewnic").value);
-      if(nn) $("g2ewnicn").value=Math.max(1,Math.round(legs/((nn.onePortOn||[]).includes(g2gpu.id)?1:nn.ports)));
+      if(nn) $("g2ewnicn").value=Math.max(1,+$("g2gph").value||8);   /* one E-W NIC per GPU (rail-optimized) */ void legs;
     }
   }
   ["g2svroem","g2server","g2gpu","g2ewnic"].forEach(id=>$(id).addEventListener("change",()=>{ if(id==="g2svroem")$("g2server").value="GENERIC"; fillG2(id==="g2svroem"||id==="g2server"); }));
@@ -2582,7 +2593,10 @@ const Exporter = {
       Engine.pickSwitch(CATALOG,$("ooboem").value||"NVIDIA","oob"));
   }
 
+  /* Default E-W NIC count = ONE NIC PER GPU (rail-optimized). Per-RA mode keeps the RA's own count
+     (e.g. RTX PRO RA 2-8-5-200: 4× B3140H for 8 GPUs). */
   function defaultNicCount(){
+    if(state.dmode!=="ra") return Math.max(1,+$("gph").value||8);
     const ewn=Engine.find(CATALOG.nics,$("ewnic").value), gpu=Engine.find(CATALOG.gpus,$("gpu").value);
     const legs=(gpu&&gpu.ewLegs)||(+$("gph").value||8);
     if(!ewn) return Math.max(1,legs);
@@ -2649,6 +2663,8 @@ const Exporter = {
   }
   ["gpu","gph","ewnic","ewnicn","nodes","nsnicn","ewoem","nsnic"].forEach(id=>$(id).addEventListener("input",syncHelpers));
   function setSeg(id,v){ const el=$(id); [...el.children].forEach(x=>x.setAttribute("aria-pressed",x.dataset.v===v?"true":"false")); state[id]=v; }
+  $("g2gph").addEventListener("change",()=>{ $("g2ewnicn").value=Math.max(1,+$("g2gph").value||8); });
+  $("gph").addEventListener("change",()=>{ $("ewnicn").value=defaultNicCount(); syncHelpers(); });   /* 1 E-W NIC per GPU */
   ["gpu","ewnic","nsnic","ewoem"].forEach(id=>$(id).addEventListener("change",()=>{
     if(id==="gpu"&&$("gpu").value==="B300-SPOD"&&state.planes!=="2") setSeg("planes","2"); /* B300 is twin-planar per RA */
     if(id==="ewnic"||id==="gpu")$("ewnicn").value=defaultNicCount();
@@ -2660,7 +2676,7 @@ const Exporter = {
     if(id==="svroem")$("server").value="GENERIC";
     refreshOptions();
     const srv=CATALOG.servers.find(s=>s.id===$("server").value);
-    $("ewnicn").value=(srv&&srv.ewNicN)||defaultNicCount();
+    $("ewnicn").value=(state.dmode==="ra"&&srv&&srv.ewNicN)||defaultNicCount();
     syncHelpers(); /* re-derive helper text from the NEW values — a stale message here previously survived server changes */
   }));
 
@@ -2941,12 +2957,20 @@ const Exporter = {
   /* RAILS ARE GPUs (Engine.railMap): a host has gph rails per plane whatever its port count — P ports per plane
      map onto them (P>gph ⇒ several ports per rail; P<gph ⇒ one port carries several rails). Leaves carry
      whole rails (Engine.railLeafMap); a leaf with >1 rail is shared, each rail a logically dedicated partition. */
-  const DrailsInfo=b=>{const ew=b.ew,g=b.input.gph,P=ew.railsPerPlane||g;
-    return {rails:g,P,dbl:P>g,shared:P<g,txt:Engine.railMapTxt(g,P)};};
-  const DleafRails=(b,r)=>{const ew=b.ew,lpb=Math.max(1,ew.leavesPerBlock||1);
-    return Engine.railLeafMap(b.input.gph,ew.railsPerPlane||b.input.gph,lpb)[((r%lpb)+lpb)%lpb];};
+  const DrailsInfo=b=>{const ew=b.ew,g=b.input.gph,P=ew.railsPerPlane||g,ro=Engine.isRailOpt(b.input.ewnicn,g);
+    return {rails:ro?g:0,railOpt:ro,P,dbl:ro&&P>g,shared:false,
+      txt:ro?Engine.railMapTxt(g,P):`not rail-optimized — ${b.input.ewnicn} NIC${b.input.ewnicn>1?"s":""} for ${g} GPUs, ${P} port${P>1?"s":""} spread evenly`};};
+  /* ports label: "port 3" / "ports 1, 5" / "ports 1–4" */
+  const DportTxt=ps=>Engine.railTxt(ps).replace(/^rails?/,m=>m==="rail"?"port":"ports");
+  /* what leaf r of a block carries: GPU rails (1 NIC per GPU) or plain host ports (spread evenly, same pattern) */
+  const DleafRails=(b,r)=>{const ew=b.ew,lpb=Math.max(1,ew.leavesPerBlock||1),P=ew.railsPerPlane||b.input.gph,ro=Engine.isRailOpt(b.input.ewnicn,b.input.gph);
+    const L=Engine.railLeafMap(ro?b.input.gph:P,P,lpb)[((r%lpb)+lpb)%lpb];
+    return ro?L:{rails:[],ports:L.ports,split:false,nonRail:true};};
   const DleafLbl=(b,r)=>{const L=DleafRails(b,r), pp=L.ports.length;
+    if(L.nonRail) return `host ${DportTxt(L.ports)}`;
     return `${Engine.railTxt(L.rails)}${L.split?` · port ${L.ports.join("+")}`:pp>L.rails.length&&L.rails.length===1?` · ${pp} ports`:""}`;};
+  /* "rails 1–8 (= GPUs)" or "host ports, not rail-optimized" */
+  const DrailsSpan=b=>Engine.isRailOpt(b.input.ewnicn,b.input.gph)?`rails 1–${b.input.gph} (= GPUs)`:`host ports · no rails`;
   const DsuTail=(nodes,per)=>{ const r=nodes%per; return r?` · last SU partial: ${r} of ${per} hosts`:""; };
   /* Real per-leaf uplink count from the engine's even striping (flat 2-tier); null ⇒ regime-fixed 32. */
   const DleafUp=(b,li)=>{ const st=b.ew.stripe; if(!st) return null;
@@ -3013,7 +3037,7 @@ const Exporter = {
     for(const c of cols) s+=trunk(c.cx,y,y+24);
     s+=`<text x="${cols[0].cx+14}" y="${y+16}" fill="var(--muted)" font-size="9">${Math.ceil((ew.links800??ew.links400)/2).toLocaleString()}×${ew.ssLinkG}G/plane</text>`;
     y+=24;
-    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`rails 1–${b.input.gph} of plane ${c.pl}`,c.pl).svg;
+    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${DrailsSpan(b)} · plane ${c.pl}`,c.pl).svg;
     if(isIB){
       s+=`<line x1="${cols[0].cx+bw/2}" y1="${y+33}" x2="414" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
         +`<line x1="486" y1="${y+33}" x2="${cols[1].cx-bw/2}" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
@@ -3031,7 +3055,7 @@ const Exporter = {
         +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${cols[1].col}" stroke-width="1.3" opacity="0.8"/>`;});
     s+=r.svg;
     return Dsvg(suY+76,"E-W dual-plane fabric overview",s,
-      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: rails 1–${b.input.gph} (one per GPU) into plane A + rails 1–${b.input.gph} into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · 1:1 per plane${isIB?" · NDR IB":""}`,
+      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: ${DrailsSpan(b)} into plane A + the same into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · 1:1 per plane${isIB?" · NDR IB":""}`,
       `two independent planes, NO plane↔plane links — every SU attaches to both · per plane: ${lpp.toLocaleString()} leaf + ${spp.toLocaleString()} spine${t3?` + ${sspp.toLocaleString()} core`:""}${isIB?" · subnet manager per plane":""}`);
   }
   function ewOv(b){
@@ -3058,7 +3082,7 @@ const Exporter = {
     }
     s+=Dtier(450,760,y, rtx?`Leaf pair (collapsed) — 2× ${sw} · ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`Leaf switch tier — ${ew.leaf.toLocaleString()}× ${sw}`,
       rtx?2:ew.leaf/ew.planes,"leaf","leafblock","var(--rail1)",
-      rtx?`rails 1–${b.input.gph} (= GPUs) · ${DleafLbl(b,0)} | ${DleafLbl(b,1)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · rails 1–${b.input.gph} (= GPUs)`).svg;
+      rtx?`${DleafLbl(b,0)} | ${DleafLbl(b,1)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`).svg;
     if(isIB){
       s+=`<line x1="830" y1="${y+33}" x2="840" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.6"/>`
         +Dbox(840,y+10,56,46,"var(--rail3)",true)
@@ -3172,7 +3196,7 @@ const Exporter = {
       `${pln?`plane ${pln} only: `:""}leaf ${pln?pln+"-":""}${li.toLocaleString()} (highlighted, ${railLbl(selRail)}) lives in block ${blk.toLocaleString()} of ${ew.blocks.toLocaleString()} = ${lpb} leaf${pln?` in THIS plane`:""} + ${ew.nodesPerBlock} nodes = SU ${(su0+1).toLocaleString()}${suN>1?`–${(su0+suN).toLocaleString()}`:""}`,
       isIB?`only the SUs cabled to this leaf are shown — rail-aligned per the SuperPOD pattern (this block's ${lpb} leaves serve ONLY ${suN===1?"this SU":`these ${suN} SUs`})${pln?` · hosts attach to planes A+B`:""}`
         :(pln?`plane ${pln==="A"?"B":"A"} has its own identical ${lpb} leaves for this block — no links between planes · hosts below attach to BOTH planes`
-         :`GPU-N of EVERY node lands on the leaf serving rail N · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + 32 up`}`));
+         :`${DrailsInfo(b).railOpt?"GPU-N of EVERY node lands on the leaf serving rail N":"not rail-optimized: host ports spread evenly"} · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`32 cages down (${32*ew.legsPerCage}×${ew.railSpeed}G host legs) + 32 up`}`));
   }
   function spine2tSVG(b,si,pln){
     const ew=b.ew;
@@ -3184,7 +3208,7 @@ const Exporter = {
       si=Math.max(1,Math.min(si||1,spp));
       const rail=Math.ceil(si/sg), j=si-(rail-1)*sg;   /* SG-n = host port n of the plane → its GPU rail(s) via Engine.railMap */
       const pb=Engine.railMap(b.input.gph,ew.railsPerPlane).find(x=>x.ports.includes(rail))||{rails:[rail],ports:[rail]};
-      const rT=Engine.railTxt(pb.rails), rTp=rT+(pb.ports.length>1?` · port ${pb.ports.indexOf(rail)+1} of ${pb.ports.length}`:"");
+      const rT=DrailsInfo(b).railOpt?Engine.railTxt(pb.rails):`host port ${rail}`, rTp=!DrailsInfo(b).railOpt?rT:rT+(pb.ports.length>1?` · port ${pb.ports.indexOf(rail)+1} of ${pb.ports.length}`:"");
       const tRow=DslotAt(sg,j), tW=Daw(tRow.length,150,40), tXs=Dxs(tRow.length,tW,40), tY=46;
       const bRow=Dslot(ew.blocks,4), bXs=Dxs(bRow.length,170,26), bY=190;
       let s="";
@@ -3294,14 +3318,14 @@ const Exporter = {
       for(let r=0;r<legs;r++){const off=(r-(legs-1)/2);
         s+=`<line x1="${hXs[k]+off*9}" y1="${hY}" x2="${450+off*26}" y2="${tY+46}" stroke="${pl?"var(--muted)":railC4[r%4]}" stroke-width="1.5" opacity="0.85"${dz}/>`;}
       if(!pl){ const per=ew.hostLinks/b.input.nodes, spd=ew.xdr?"800G XDR":ew.proto==="ib"?"400G NDR":`${ew.railSpeed}G`;
-        SW.push({x1:hXs[k],y1:hY,x2:450,y2:tY+46,c:"var(--rail1)",op:0,lab:`×${per}`,tt:`Host ${hn.toLocaleString()} → its ${ew.leavesPerBlock*ew.planes} rail leaves: ${per} × ${spd} — ${DrailsInfo(b).txt}${ew.planes===2?" per plane (both planes)":""}`}); }
+        SW.push({x1:hXs[k],y1:hY,x2:450,y2:tY+46,c:"var(--rail1)",op:0,lab:`×${per}`,tt:`Host ${hn.toLocaleString()} → its ${ew.leavesPerBlock*ew.planes} leaves: ${per} × ${spd} — ${DrailsInfo(b).txt}${ew.planes===2?" per plane (both planes)":""}`}); }
       s+=Dbox(hXs[k]-88,hY,176,hH,pl?"var(--muted)":"var(--fg)",pl)
         +`<text x="${hXs[k]}" y="${hY+20}" text-anchor="middle" fill="var(--fg)" font-weight="700">${pl?"planned slot":`GPU host ${hn.toLocaleString()}`}</text>`
-        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${b.input.ewnicn}× ${b.input.ewnic} — ${ew.planes===2?`${b.input.gph} rails × 2 planes`:`${b.input.gph} rails${DrailsInfo(b).dbl?` ·${DrailsInfo(b).P/b.input.gph} ports ea`:DrailsInfo(b).shared?` ·${b.input.gph/DrailsInfo(b).P}/port`:""}`}`}</text>`;});
+        +`<text x="${hXs[k]}" y="${hY+38}" text-anchor="middle" fill="var(--muted)" font-size="10">${pl?"SU expansion — not in this BOM":`${b.input.ewnicn}× ${b.input.ewnic} — ${!DrailsInfo(b).railOpt?`${DrailsInfo(b).P*ew.planes} ports · no rails`:ew.planes===2?`${b.input.gph} rails × 2 planes`:`${b.input.gph} rails${DrailsInfo(b).dbl?` ·${DrailsInfo(b).P/b.input.gph} ports ea`:""}`}`}</text>`;});
     s+=Dwires(SW,{t:0.3});
     const riS=DrailsInfo(b);
     return Dsvg(hY+hH+58,`Inside SU ${si} — E-W attach`,s,
-      `each host: ${b.input.gph} GPU rails (${riS.P===b.input.gph?"1 port each":riS.dbl?`${riS.P/b.input.gph} ports each`:`${b.input.gph/riS.P} rails per port`}) × ${ew.railSpeed}G${ew.planes===2?" in each plane A/B":""} · rail k of every host → the leaf serving rail k`,
+      riS.railOpt?`each host: ${b.input.gph} GPU rails (${riS.P===b.input.gph?"1 port each":`${riS.P/b.input.gph} ports each`}) × ${ew.railSpeed}G${ew.planes===2?" in each plane A/B":""} · rail k of every host → the leaf serving rail k`:`each host: ${riS.txt} × ${ew.railSpeed}G${ew.planes===2?" per plane":""} (rail optimization needs 1 NIC per GPU)`,
       `SU ${si.toLocaleString()} = hosts ${(first+1).toLocaleString()}–${Math.min(first+su.n,b.input.nodes).toLocaleString()}${first+su.n>b.input.nodes?` (+${first+su.n-b.input.nodes} planned, dotted)`:""} on leaf block ${blk.toLocaleString()} · E-W attach only — N-S and OOB under their own tabs`);
   }
   function suNsSVG(b,si){
@@ -3635,7 +3659,7 @@ const Exporter = {
     }
     const leafY=y;
     s+=Dband(y, rtx?`Leaf - SU connectivity — collapsed pair · 2× ${sw}`:`Leaf - SU connectivity per plane — ${sw}`,
-      rtx?`ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`${per(ew.leaf)} · ${ew.blocks.toLocaleString()} rail-aligned block(s) × ${ew.leavesPerBlock} leaves · rails 1–${b.input.gph} (= GPUs) per plane`,"var(--rail1)");
+      rtx?`ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`${per(ew.leaf)} · ${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} leaves · ${DrailsSpan(b)} per plane`,"var(--rail1)");
     if(isIB){ /* UFM attaches to the IB fabric at the leaf tier (SuperPOD H100 RA: takes a node slot) */
       s+=`<line x1="770" y1="${leafY+23}" x2="788" y2="${leafY+23}" stroke="var(--rail3)" stroke-width="1.6" stroke-dasharray="3 3"/>`
         +Dbox(788,leafY,102,46,"var(--rail3)",true)
@@ -3647,7 +3671,7 @@ const Exporter = {
     s+=Dband(y,`GPU host tier — ${b.input.nodes.toLocaleString()} hosts in ${su.c.toLocaleString()} SUs (${su.n}/SU)`,`${b.input.gph} GPUs per host · ${ri.txt}${dual?" per plane (twin-planar)":""}${DsuTail(b.input.nodes,su.n)}`,"var(--fg)");
     y+=46;
     return Dsvg(y+40,"Generalized E-W tier design",s,
-      dual?"per-plane design: PLANE A and PLANE B are identical, independent fabrics — no plane-to-plane links; every host attaches to both planes":`rail-optimized: GPU k of every host lands on the leaf serving rail k`,
+      dual?"per-plane design: PLANE A and PLANE B are identical, independent fabrics — no plane-to-plane links; every host attaches to both planes":(ri.railOpt?`rail-optimized: GPU k of every host lands on the leaf serving rail k`:`not rail-optimized (${b.input.ewnicn} NICs for ${b.input.gph} GPUs): host ports spread evenly over the leaves`),
       `1:1 non-blocking at every tier${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):" · RoCEv2 lossless Ethernet"}`);
   }
   /* ---- MIXED-GROUP in-app overviews (Storage / OOB) and detail views ---- */
@@ -3686,11 +3710,13 @@ const Exporter = {
   /* ---- MIXED: shared views use the engine's rail-aligned layout (b.ew.mg.layout) — every link exact & labeled ---- */
   const mCol=g=>g===2?"var(--rail4)":"var(--rail2)";
   const mRails=rs=>Engine.railTxt(rs);   /* "rail 3" / "rails 1, 2" / "rails 1–4" — rails are GPUs */
-  const mLegs=(us)=>us.reduce((a,u)=>a+u.legs,0);   /* host ports per host on a leaf (Σ bundle ports) */
+  const mLegs=(us)=>us.reduce((a,u)=>a+u.legs,0);
+  /* label for what one group's host sends to a leaf: GPU rails (1 NIC per GPU) or plain host ports (not rail-optimized) */
+  const mU=us=>us.length&&us[0].railOpt===false?`host ${DportTxt(us.flatMap(u=>u.ports))}`:mRails(us.flatMap(u=>u.rails));   /* host ports per host on a leaf (Σ bundle ports) */
   const mLay=b=>(b.ew.mixed&&b.ew.mg&&b.ew.mg.layout&&b.ew.mg.layout.ok&&b.ew.mg.layout.L===b.ew.leaf)?b.ew.mg.layout:null;
   const mNoLay=(b,what)=>Dsvg(120,what,`<text x="450" y="50" text-anchor="middle" fill="var(--fg)" font-weight="700">No spine tier in this design</text><text x="450" y="70" text-anchor="middle" fill="var(--muted)" font-size="10">the manual counts set 0 spines — see the flags</text>`);
   /* host blocks of one group present on a leaf: [{g,block,h0,h1,hosts,rails:[…],sp}] */
-  const mBlocksOn=lf=>{ const m=new Map(); for(const u of lf.units){ const k=u.g+"|"+u.block; if(!m.has(k)) m.set(k,{g:u.g,block:u.block,blocks:u.blocks,h0:u.h0,h1:u.h1,hosts:u.hosts,sp:u.sp,rails:[]}); m.get(k).rails.push(...u.rails); m.get(k).legs=(m.get(k).legs||0)+u.legs; } return [...m.values()]; };
+  const mBlocksOn=lf=>{ const m=new Map(); for(const u of lf.units){ const k=u.g+"|"+u.block; if(!m.has(k)) m.set(k,{g:u.g,block:u.block,blocks:u.blocks,h0:u.h0,h1:u.h1,hosts:u.hosts,sp:u.sp,railOpt:u.railOpt,rails:[],ports:[]}); m.get(k).rails.push(...u.rails); m.get(k).ports.push(...u.ports); m.get(k).legs=(m.get(k).legs||0)+u.legs; } return [...m.values()]; };
   function mSpineSVG(b,i){
     const lay=mLay(b); if(!lay||!lay.stripe) return mNoLay(b,"Mixed spine detail");
     const S=lay.stripe.S; i=Math.max(1,Math.min(i||1,S));
@@ -3728,19 +3754,19 @@ const Exporter = {
       const G=mG(b,u.g), n=u.hosts*u.legs;
       s+=Dbox(x-bW/2,bY,bW,62,mCol(u.g))+`<text x="${x}" y="${bY+18}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">Group ${u.g} · hosts ${u.h0}–${u.h1}</text>`
         +`<text x="${x}" y="${bY+33}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.gpu.length>24?G.gpu.slice(0,23)+"…":G.gpu}${u.blocks>1?` · block ${u.block}`:""}</text>`
-        +`<text x="${x}" y="${bY+48}" text-anchor="middle" fill="${mCol(u.g)}" font-size="9.5" font-weight="700">${mRails(u.rails)} · ${u.legs} port${u.legs>1?"s":""}/host</text>`;
-      W.push({x1:x,y1:bY,x2:450,y2:lY+80,c:mCol(u.g),lab:`×${n}`,tt:`Group ${u.g} hosts ${u.h0}–${u.h1} → leaf ${i}: ${mRails(u.rails)} (GPU ${u.rails.join(", ")}) · ${u.hosts} host(s) × ${u.legs} port(s) = ${n} × ${u.sp}G`}); });
+        +`<text x="${x}" y="${bY+48}" text-anchor="middle" fill="${mCol(u.g)}" font-size="9.5" font-weight="700">${u.railOpt===false?`host ${DportTxt(u.ports)} · no rails`:`${mRails(u.rails)} · ${u.legs} port${u.legs>1?"s":""}/host`}</text>`;
+      W.push({x1:x,y1:bY,x2:450,y2:lY+80,c:mCol(u.g),lab:`×${n}`,tt:`Group ${u.g} hosts ${u.h0}–${u.h1} → leaf ${i}: ${u.railOpt===false?`host ${DportTxt(u.ports)} (not rail-optimized)`:`${mRails(u.rails)} (GPU ${u.rails.join(", ")})`} · ${u.hosts} host(s) × ${u.legs} port(s) = ${n} × ${u.sp}G`}); });
     s+=Dwires(W);
     const g1=blocks.filter(x=>x.g===1).reduce((a,x)=>a+x.hosts*x.legs,0), g2=blocks.filter(x=>x.g===2).reduce((a,x)=>a+x.hosts*x.legs,0);
     /* logically dedicated rail partitions on this shared leaf */
     const lr=[...new Set(lf.units.flatMap(u=>u.rails))].sort((a,b)=>a-b);
     { const pY=lY+56, n=Math.min(lr.length,8), pw=Math.min(60,Math.floor(320/Math.max(1,n))-4), shownR=lr.length<=8?lr:[...lr.slice(0,7),null];
-      s+=`<text x="450" y="${pY-3}" text-anchor="middle" fill="var(--muted)" font-size="9">${lr.length>1?`${lr.length} logically dedicated rail partitions`:`dedicated to rail ${lr[0]}`}</text>`;
+      s+=`<text x="450" y="${pY-3}" text-anchor="middle" fill="var(--muted)" font-size="9">${!lr.length?"no GPU rails here — host ports only (not rail-optimized)":lr.length>1?`${lr.length} logically dedicated rail partitions`:`dedicated to rail ${lr[0]}`}${lr.length&&lf.units.some(u=>u.railOpt===false)?" + non-rail host ports":""}</text>`;
       shownR.forEach((r,k)=>{ const x=450+(k-(shownR.length-1)/2)*(pw+4);
         s+=`<rect x="${x-pw/2}" y="${pY+1}" width="${pw}" height="17" rx="4" fill="none" stroke="var(--rail1)" stroke-width="1.2"/><text x="${x}" y="${pY+13}" text-anchor="middle" fill="var(--rail1)" font-size="9" font-weight="700">${r==null?`+${lr.length-7}`:(pw<44?`R${r}`:`rail ${r}`)}</text>`; }); }
     return Dsvg(bY+62+58,`Shared leaf ${i} — exact rail layout (mixed)`,s,
       `leaf ${i}: ${g1} × ${b.ew.mg.s1}G (group 1) + ${g2} × ${b.ew.mg.s2}G (group 2) host legs = ${lf.down} cages down · ${S?`${lf.k} uplink(s) to each of ${S} spines = ${lf.up} up (${ratio})`:"no spine tier"}${b.ew.manual?" · MANUAL counts":""}`,
-      `rails = GPUs: rail k of every host → ${lay.aligned?"the same leaf":"ONE leaf"} · ${lay.units.length} rail units over ${lay.L} leaves, ≤32 host cages each · app-defined (no RA)`);
+      `rail k → ${lay.aligned?"the same leaf":"ONE leaf"} (1 NIC/GPU hosts) · ${lay.units.length} rail units over ${lay.L} leaves, ≤32 host cages each · app-defined (no RA)`);
   }
   function mNsLeafSVG(b){
     const ns=b.ns, i=b.input;
@@ -3787,11 +3813,11 @@ const Exporter = {
     const lW=Daw(shownL.length,150,18), lX=Dxs(shownL.length,lW,18), lY=40, hY=250, hX=Dxs(suN,176,22);
     let s=`<text x="450" y="24" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaves used by group ${gi} · SU ${si} (${leafIds.length} of ${lay.L} leaves)</text>`, W=[];
     shownL.forEach((L,k)=>{ if(L==null){ s+=Dell(lX[k],lY+24); return; }
-      s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">${mRails(per.get(L).flatMap(u=>u.rails))}</text>`; });
+      s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">${mU(per.get(L))}</text>`; });
     for(let j=0;j<suN;j++){
       const hx=hX[j], planned=j>=present, hn=h0+j;
       if(!planned) shownL.forEach((L,k)=>{ if(L==null) return; const rs=per.get(L);
-        const pn=mLegs(rs); W.push({x1:hx,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${pn}`,tt:`Group ${gi} host ${hn} → leaf ${L}: ${mRails(rs.flatMap(u=>u.rails))} = ${pn} × ${G.sp}G port(s)`}); });
+        const pn=mLegs(rs); W.push({x1:hx,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${pn}`,tt:`Group ${gi} host ${hn} → leaf ${L}: ${mU(rs)} = ${pn} × ${G.sp}G port(s)`}); });
       s+=Dbox(hx-88,hY,176,58,planned?"var(--muted)":col,planned)
         +`<text x="${hx}" y="${hY+18}" text-anchor="middle" fill="${planned?"var(--muted)":"var(--fg)"}" font-weight="700">${planned?"planned slot":`Host ${hn.toLocaleString()}`}</text>`
         +`<text x="${hx}" y="${hY+33}" text-anchor="middle" fill="var(--muted)" font-size="9">${planned?"SU expansion — not in this BOM":`${G.gph}× ${G.gpu.length>22?G.gpu.slice(0,21)+"…":G.gpu}`}</text>`
@@ -3799,7 +3825,7 @@ const Exporter = {
     }
     s+=Dwires(W);
     return Dsvg(hY+58+58,`Host group ${gi} SU ${si} — exact rail layout`,s,
-      `rail-aligned · ${Engine.railMapTxt(G.gph,G.ports/G.n)} · rail k of every host → the same leaf · per host ${G.ports/G.n} × ${G.sp}G over ${leafIds.length} leaves`,
+      `${G.nicn===G.gph?`rail-aligned · ${Engine.railMapTxt(G.gph,G.ports/G.n)} · rail k of every host → the same leaf`:`not rail-optimized (${G.nicn} NICs for ${G.gph} GPUs) · host port p of every host → the same leaf, spread evenly`} · per host ${G.ports/G.n} × ${G.sp}G over ${leafIds.length} leaves`,
       `SU ${si} of ${count} (group ${gi}): ${present} host${present>1?"s":""}${present<suN?` + ${suN-present} planned (dotted, no BOM quantities)`:""} · app-defined mixed layout — no NVIDIA RA covers mixed groups (flagged)`);
   }
   function mHostSVG(b,gi){
@@ -3812,11 +3838,11 @@ const Exporter = {
       const lW=Daw(shown.length,130,16), lX=Dxs(shown.length,lW,16), lY=40, hY=230; let W=[];
       s=`<text x="450" y="24" text-anchor="middle" fill="var(--fg)" font-weight="700">One group-${gi} host → the shared leaves (${ids.length} of ${lay.L})</text>`;
       shown.forEach((L,k)=>{ if(L==null){ s+=Dell(lX[k],lY+24); return; }
-        s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">${mRails(per.get(L).flatMap(u=>u.rails))}</text>`;
-        { const us=per.get(L), pn=mLegs(us); W.push({x1:450,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${pn}`,tt:`Group ${gi} host 1 → leaf ${L}: ${mRails(us.flatMap(u=>u.rails))} via port${pn>1?"s":""} ${us.flatMap(u=>u.ports).join(", ")} = ${pn} × ${G.sp}G`}); } });
+        s+=Dbox(lX[k]-lW/2,lY,lW,50,"var(--rail1)")+`<text x="${lX[k]}" y="${lY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">leaf ${L}</text><text x="${lX[k]}" y="${lY+36}" text-anchor="middle" fill="${col}" font-size="9.5" font-weight="700">${mU(per.get(L))}</text>`;
+        { const us=per.get(L), pn=mLegs(us); W.push({x1:450,y1:hY,x2:lX[k],y2:lY+50,c:col,lab:`×${pn}`,tt:`Group ${gi} host 1 → leaf ${L}: ${mU(us)} via port${pn>1?"s":""} ${us.flatMap(u=>u.ports).join(", ")} = ${pn} × ${G.sp}G`}); } });
       s+=Dbox(300,hY,300,58,col)+`<text x="450" y="${hY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700">Host 1 (of ${G.n.toLocaleString()}) — ${G.srv}</text>`
         +`<text x="450" y="${hY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.gph}× ${G.gpu} · ${G.nicn}× ${G.nic.id}</text>`
-        +`<text x="450" y="${hY+49}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${Engine.railMapTxt(G.gph,G.ports/G.n)} · ${G.ports/G.n}×${G.sp}G</text>`;
+        +`<text x="450" y="${hY+49}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${G.nicn===G.gph?Engine.railMapTxt(G.gph,G.ports/G.n):`not rail-optimized · ${G.nicn} NICs / ${G.gph} GPUs`} · ${G.ports/G.n}×${G.sp}G</text>`;
       s+=Dwires(W);
       return Dsvg(hY+58+58,`Host group ${gi} E-W attach — exact rails`,s,
         `every group-${gi} host in the same block repeats this map exactly (rail-aligned) · group total ${G.ports.toLocaleString()} × ${G.sp}G`,
@@ -4295,7 +4321,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         <div class="fabgrid">
           ${bom.inc.ew?`<div class="fabcard"><div class="fh">Compute E-W ${stIcon(fst.ew)}</div>
             <div class="big">${bom.ew.leaf.toLocaleString()} + ${bom.ew.spine.toLocaleString()}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()}`:""} <small>leaf + spine${bom.ew.sspine?" + core":""}</small></div>
-            <div class="meta"><span class="mono">${esc(bom.ewSwitch.id)}</span> · ${bom.mixed?`shared leaf-spine · 2 host groups · ${bom.ew.mg.downG.toLocaleString()}G host bandwidth`:`${bom.ew.tier===3?"3-tier Clos":"leaf-spine"} · ${ri0.rails} rails/host (= GPUs)${bom.ew.planes===2?" × 2 planes":""} @ ${bom.ew.railSpeed}G`}</div></div>`:""}
+            <div class="meta"><span class="mono">${esc(bom.ewSwitch.id)}</span> · ${bom.mixed?`shared leaf-spine · 2 host groups · ${bom.ew.mg.downG.toLocaleString()}G host bandwidth`:`${bom.ew.tier===3?"3-tier Clos":"leaf-spine"} · ${ri0.railOpt?`${ri0.rails} rails/host (= GPUs)${bom.ew.planes===2?" × 2 planes":""}`:"not rail-optimized"} @ ${bom.ew.railSpeed}G`}</div></div>`:""}
           ${bom.inc.ns?`<div class="fabcard ns"><div class="fh">North-South ${stIcon(fst.ns)}</div>
             <div class="big">${bom.ns.merged?"merged":bom.ns.leaf.toLocaleString()+(bom.ns.spine?` + ${bom.ns.spine.toLocaleString()}`:"")+(bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()}`:"")} <small>${bom.ns.merged?"into E-W leaves":"leaf"+(bom.ns.spine?" + spine":"")+(bom.ns.sspine?" + core":"")}</small></div>
             <div class="meta"><span class="mono">${esc(bom.nsSwitch.id)}</span> · ${bom.mixed?"per-group front-end NICs":`${i.nsnicn}× ${esc(i.nsnic)} / host`} · ${(bom.ns.nsPortsPerNode||2)>=2?"dual-homed":"single-homed"}</div></div>`:""}
@@ -4517,7 +4543,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="76";
+  const APP_BUILD="77";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
