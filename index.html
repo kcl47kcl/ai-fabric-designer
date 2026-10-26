@@ -311,6 +311,15 @@ body.zv-open{overflow:hidden}
   .mnav svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 }
 .help.cnt-bad{color:var(--warn);font-weight:600}
+.cf-back{position:fixed;inset:0;z-index:60;background:rgba(10,20,40,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+.cf{background:var(--card);color:var(--fg);border-radius:14px;max-width:620px;width:100%;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.35);border:1px solid var(--border)}
+.cf h3{margin:0;font-size:16px}.cf .cf-head{padding:16px 18px 6px;display:flex;gap:10px;align-items:flex-start}
+.cf .cf-ic{color:var(--warn);font-size:20px;line-height:1}.cf .cf-body{padding:4px 18px 8px;font-size:13.5px}
+.cf .cf-item{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:10px 0}
+.cf .cf-item h4{margin:0 0 6px;font-size:14px}.cf ul{margin:4px 0 6px 18px;padding:0}.cf li{margin:2px 0}
+.cf .cf-alt{margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--ok-bg);color:var(--fg)}
+.cf .cf-also{color:var(--muted);font-size:12.5px}
+.cf .cf-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;padding:10px 18px 16px;border-top:1px solid var(--border)}
 </style>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
@@ -352,6 +361,13 @@ body.zv-open{overflow:hidden}
               <button type="button" data-v="custom" aria-pressed="false" title="Full customization — every option opens up; off-RA choices are validated end to end and flagged">Custom</button>
             </div>
             <div class="help warn" id="dmode-help"></div></div>
+          <div class="field" style="margin-top:12px"><label for="oversub">E-W oversubscription — leaf down : up</label>
+            <select id="oversub" title="Ratio of host-facing to uplink bandwidth on every E-W leaf. 1:1 = non-blocking (what the NVIDIA RAs specify for GPU fabrics). Spines and cores stay 1:1.">
+              <option value="1" selected>1:1 — non-blocking (default, RA)</option>
+              <option value="2">2:1</option>
+              <option value="3">3:1</option>
+              <option value="4">4:1</option>
+            </select><div class="help" id="oversub-help" style="display:block"></div></div>
         </div>
       </div>
 
@@ -918,7 +934,8 @@ const Engine = (() => {
     return `${gph} rails (= ${gph} GPUs) · ${m.every(x=>x.rails.length===m[0].rails.length)?`each port carries ${m[0].rails.length} rails`:`${P} ports carry ${gph} rails`}`; }
 
   function mixedLayout(groups,opt={}){
-    const RL=opt.R||64, RSP=opt.RS||RL, DL=RL/2;   /* leaf radix (DL down / DL up) and spine radix, 800G cages */
+    const RL=opt.R||64, RSP=opt.RS||RL, DL=RL/2;   /* leaf radix and spine radix, 800G cages; DL = the 1:1 half used for host-block granularity */
+    const rr=Math.max(1,+opt.r||1), LSm=leafSplit(RL,rr), DD=LSm.D, UU=LSm.U;   /* leaf host-cage budget DD / uplink budget UU at rr:1 (1:1 ⇒ DL/DL) */
     /* rail units per leaf count L: a port carrying several rails groups them by their rail home over L leaves (railMap) */
     const mkUnits=L=>{ const us=[];
       for(const G of groups){
@@ -940,32 +957,33 @@ const Engine = (() => {
     const sortU=us=>us.sort((a,b)=>a.g-b.g||a.block-b.block||a.rail-b.rail||a.port-b.port);
     const place=(L,cap,aligned)=>{ units=mkUnits(L); const order=orderOf(units); const bucket=Array.from({length:L},()=>[]), load=new Array(L).fill(0);
       for(const i of order){ const u=units[i]; const [a,z]=aligned?home(u,L):[0,L]; let best=-1, bl=1e18;
-        for(let j=a;j<z;j++){ if(cap&&cagesOf([...bucket[j],u])>DL) continue; if(load[j]<bl){ bl=load[j]; best=j; } }
+        for(let j=a;j<z;j++){ if(cap&&cagesOf([...bucket[j],u])>DD) continue; if(load[j]<bl){ bl=load[j]; best=j; } }
         if(best<0) return null; bucket[best].push(u); load[best]+=u.bw; u.leaf=best+1; }
       return bucket; };
     if(opt.L){ /* MANUAL leaf count: the same rail-home placement over exactly L leaves (overload is reported by the caller, never hidden) */
       const L=opt.L, bucket=place(L,false,true);
       const down=bucket.map(cagesOf);
       const leaves=down.map((d,i)=>({leaf:i+1,down:d,k:0,up:0,units:sortU(units.filter(u=>u.leaf===i+1))}));
-      return {ok:true,manual:true,aligned:true,R:RL,RS:RSP,L,units,leaves,stripe:null,downCages:down.reduce((a,b)=>a+b,0)};
+      return {ok:true,manual:true,aligned:true,R:RL,RS:RSP,D:DD,U:UU,ratio:rr,L,units,leaves,stripe:null,downCages:down.reduce((a,b)=>a+b,0)};
     }
     /* RAILS FIRST: the smallest L whose rail-home placement keeps every leaf ≤ 32 host cages with no idle leaf
        (rail k of every host on the same leaf set — the rail-optimized property). Only if no such L ≤ 64 exists,
        the smallest balanced L (each block's rail still whole on one leaf) — reported as not cross-group aligned. */
-    const L0=Math.max(2,2*ceil(totBW/800/(2*DL)));
+    const L0=Math.max(2,2*ceil(totBW/800/(2*DD)));
     for(const aligned of [true,false]) for(let L=L0; L<=RSP; L+=2){
       const bucket=place(L,true,aligned);
       if(!bucket||(aligned&&bucket.some(b=>!b.length))) continue;
       const down=bucket.map(cagesOf);
       /* 1:1 uplinks per leaf, striped evenly: leaves grouped by their up count */
-      const byUp={}; down.forEach(d=>{ byUp[d]=(byUp[d]||0)+1; });
-      const cands=[2,4,8,16,32,64].filter(x=>x<=DL);
-      let st=evenStripe(Object.entries(byUp).map(([u,n])=>({leaves:n,up:+u})),RSP,DL,cands);
-      if(!st) st=evenStripe([{leaves:L,up:Math.max(...down)}],RSP,DL,cands);      /* uniform fallback: every leaf at the max (≥1:1) */
+      const need=d=>ceil(d/rr);                                                      /* uplinks a leaf needs at rr:1 */
+      const byUp={}; down.forEach(d=>{ byUp[need(d)]=(byUp[need(d)]||0)+1; });
+      const cands=stripeCands(UU,rr);
+      let st=evenStripe(Object.entries(byUp).map(([u,n])=>({leaves:n,up:+u})),RSP,UU,cands);
+      if(!st) st=evenStripe([{leaves:L,up:need(Math.max(...down))}],RSP,UU,cands);      /* uniform fallback: every leaf at the max (≥ rr:1) */
       if(!st) continue;
-      const kOf=d=>{ const g=st.groups.find(x=>x.up===d); return g?g.k:st.groups[0].k; };
+      const kOf=d=>{ const g=st.groups.find(x=>x.up===need(d)); return g?g.k:st.groups[0].k; };
       const leaves=down.map((d,i)=>({leaf:i+1,down:d,k:kOf(d),up:kOf(d)*st.S,units:sortU(units.filter(u=>u.leaf===i+1))}));
-      return {ok:true,aligned,R:RL,RS:RSP,L,units,leaves,stripe:st,downCages:down.reduce((a,b)=>a+b,0)};
+      return {ok:true,aligned,R:RL,RS:RSP,D:DD,U:UU,ratio:rr,L,units,leaves,stripe:st,downCages:down.reduce((a,b)=>a+b,0)};
     }
     return {ok:false,why:`the two host groups need more than ${RSP} shared leaves (${ceil(totBW/800).toLocaleString()} host-facing 800G cages) — beyond a 2-tier shared fabric; split the groups into separate fabrics`};
   }
@@ -983,12 +1001,14 @@ const Engine = (() => {
         sends ⌈Lp/G⌉ links to EVERY core switch of every group (equal integers, ≥1:1).
       • G = smallest even divisor of U with core down-ports Σ⌈Lp/G⌉ ≤ R; pod spines keep up+down ≤ R.
       • If no G fits, the fabric is NOT buildable in 3 tiers — returned as infeasible (never drawn). */
-  function fold3({U,R,lpb,blocks,planes,nodesPerBlock}){
+  function fold3({U,R,lpb,blocks,planes,nodesPerBlock,Us=U}){
+    /* U = leaf up-ports; Us = pod-spine down budget (= U at 1:1; R/2 when the LEAF is oversubscribed — spines stay 1:1) */
     const divs=[]; for(let d=2;d<=U;d++) if(U%d===0&&d%2===0) divs.push(d);
-    const bpp=Math.max(1,Math.floor(U/lpb)), podLeavesMax=bpp*lpb;
+    const divsG=[]; for(let d=2;d<=Us;d++) if(Us%d===0&&d%2===0) divsG.push(d);   /* core group size: an even divisor of the pod-spine half (= U at 1:1) */
+    const bpp=Math.max(1,Math.floor(Us/lpb)), podLeavesMax=bpp*lpb;
     const pods=ceil(blocks/bpp), podL=[];
     for(let p=0;p<pods;p++) podL.push(Math.min(bpp,blocks-p*bpp)*lpb);
-    for(const G of divs){
+    for(const G of divsG){
       const coreDown=podL.reduce((a,L)=>a+ceil(L/G),0);
       if(coreDown>R) continue;
       const podInfo=[]; let ok=true;
@@ -996,49 +1016,68 @@ const Engine = (() => {
         /* per core group this pod carries L links: L ≥ G ⇒ ⌈L/G⌉ to every core of the group;
            L < G ⇒ 1 link to each of L cores (a partial pod touches only the cores it can fill, 1:1) */
         const pc=ceil(L/G), touch=Math.min(L,G), perGroup=L>=G?G*pc:L; let pick=null;
-        for(const Sp of divs){ if(Sp<L) continue; const k=U/Sp, down=L*k, up=(U/Sp)*perGroup;
-          if(down<=U&&up+down<=R&&up>=down){ pick={L,Sp,k,down,up,perCore:pc,touch,perGroup}; break; } }
+        for(const Sp of divs){ const k=U/Sp, down=L*k, up=(U/Sp)*perGroup; if(down>Us) continue;
+          if(up+down<=R&&up>=down){ pick={L,Sp,k,down,up,perCore:pc,touch,perGroup}; break; } }
         if(!pick){ ok=false; break; } podInfo.push(pick);
       }
       if(!ok) continue;
       const spinePP=podInfo.reduce((a,x)=>a+x.Sp,0), linksLS=podInfo.reduce((a,x)=>a+x.L*U,0), linksSC=podInfo.reduce((a,x)=>a+U*x.perGroup,0);
-      return {ok:true,U,R,G,pods,podInfo,bpp,podLeavesMax,podNodes:bpp*nodesPerBlock,coreDown,
-        spine:spinePP*planes,sspine:U*G*planes,linksLS:linksLS*planes,linksSC:linksSC*planes,coreGroups:U,coreGroupSize:G,coreStripe:U/G};
+      return {ok:true,U,Us,R,G,pods,podInfo,bpp,podLeavesMax,podNodes:bpp*nodesPerBlock,coreDown,
+        spine:spinePP*planes,sspine:U*G*planes,linksLS:linksLS*planes,linksSC:linksSC*planes,coreGroups:U,coreGroupSize:G,coreStripe:Us/G};
     }
     const maxPods=R; // G=U ⇒ one link per pod per core ⇒ ≤ R pods
-    return {ok:false,pods,U,R,podLeavesMax,podNodes:bpp*nodesPerBlock,
+    return {ok:false,pods,U,Us,R,podLeavesMax,podNodes:bpp*nodesPerBlock,
       why:`${pods} pods per plane exceed the 3-tier maximum of ${maxPods} pods (${(maxPods*bpp*nodesPerBlock).toLocaleString()} hosts per plane) on ${R}-port switches — a 4th tier or a higher-radix platform is required`};
   }
   const fold3Basis=(f,unit)=>{ const full=f.podInfo[0], last=f.podInfo[f.podInfo.length-1];
     return `3-tier folded Clos: ${f.pods} pod(s)/plane (≤${f.podLeavesMax} leaves = ${f.podNodes.toLocaleString()} hosts per pod); pod: each leaf ${f.U} up ${unit}s → ${full.Sp} pod spines × ${full.k}${last!==full&&last.Sp!==full.Sp?` (last pod: ${last.L} leaves → ${last.Sp} spines × ${last.k})`:""}; core = ${f.U} groups × ${f.G} switches — every full pod sends ${full.perCore} link(s) to each core switch${last!==full&&(last.perGroup!==full.perGroup)?` (last pod: ${last.touch<f.G?`1 link to ${last.touch} of the ${f.G} switches per group`:`${last.perCore} per switch`})`:""}; core ${f.coreDown}/${f.R} down-ports, pod spine ≤${Math.max(...f.podInfo.map(x=>x.down+x.up))}/${f.R} ports — all within radix`; };
 
+  /** LEAF OVERSUBSCRIPTION (Custom input; RA designs are 1:1). The commonly used leaf down:up ratios are 1:1 (non-blocking),
+      2:1, 3:1 and 4:1. For ratio r on an R-port leaf: U = largest EVEN up-port count with U·(r+1) ≤ R, D = r·U down-ports
+      (64-port: 1:1 32/32 · 2:1 40/20 · 3:1 48/16 · 4:1 48/12). r = 1 is exactly the R/2 / R/2 split every design used before. */
+  const OVERSUB=[1,2,3,4];
+  function leafSplit(R,r){ r=Math.max(1,+r||1); if(r<=1) return {D:R/2,U:R/2,r:1};
+    let U=Math.floor(R/(r+1)); if(U%2) U--; U=Math.max(2,U); return {D:r*U,U,r}; }
+  /* spine-count candidates: 1:1 keeps the power-of-two house rule (every result unchanged); r:1 uses every even count ≤ U */
+  const stripeCands=(U,r)=>{ if(!(r>1)) return [2,4,8,16,32,64].filter(x=>x<=U); const c=[]; for(let s=2;s<=U;s+=2) c.push(s); return c; };
+  const ovrOf=i=>(i&&i.dmode==="custom")?Math.max(1,+i.oversub||1):1;
+  const ratioTxt=r=>r>1?`${r}:1`:"1:1";
+
   /* R = leaf radix and RS = spine radix in 800G cages (64 for SN5600/SN5610-class; Arista 7060X6-32PE / 7280R4 = 32,
      7060XE7 = 128, 7800R4 chassis = up to 576). Every 64-port result is unchanged. */
-  function sizeEWCore(nodes, linksPerNode, planes, railSpeed, R=64, RS=R){
-    const D=R/2;                                                   /* leaf: D cages down, D up (1:1) */
+  function sizeEWCore(nodes, linksPerNode, planes, railSpeed, R=64, RS=R, r=1){
+    r=Math.max(1,+r||1); const LS=leafSplit(R,r), D=LS.D, U=LS.U;  /* leaf: D cages down, U up (1:1 ⇒ R/2 each) */
     const legsPerCage = Math.max(1, Math.floor(800/railSpeed));   // 2 @400G, 4 @200G (1:2 splitter per 400G leg)
     const railsPerLeaf = 2;
     const railsPerPlane = linksPerNode/planes;
     const leavesPerBlock = Math.max(1, railsPerPlane/railsPerLeaf);
-    const nodesPerBlock = Math.floor(R*legsPerCage/(railsPerLeaf*2)); // 64-port: 32 @400G, 64 @200G (leaf: R/2 down-cages)
+    const nodesPerBlock = Math.floor(D*legsPerCage/railsPerLeaf);   // 64-port 1:1: 32 @400G, 64 @200G (leaf: D down-cages)
     const blocksPerPlane = ceil(nodes/nodesPerBlock);
     const leavesPerPlane = leavesPerBlock*blocksPerPlane;
     const leaf = leavesPerPlane*planes;
     const hostLinks = nodes*linksPerNode;
     const downCages = ceil(hostLinks/legsPerCage);
-    const upCages = ceil(hostLinks*railSpeed/800);                 // leaf↔spine 800G links (1:1 Gbps)
+    const upCages = ceil(hostLinks*railSpeed/800/r);               // leaf↔spine 800G links (host Gbps ÷ r)
     const upCagesPerPlane = ceil(upCages/planes);
     let tier=2, regime="flat", spine, sspine=0, pods=0, podNodes=0, podBlocks=0, coreGroups=0, coreGroupSize=0, linksSC=0, spineBasis;
     const nLast = nodes-(blocksPerPlane-1)*nodesPerBlock;
-    const upFull = ceil(nodesPerBlock*railsPerLeaf*railSpeed/800), upLast = ceil(nLast*railsPerLeaf*railSpeed/800);
-    const stripe = leavesPerPlane<=RS ? evenStripe([{leaves:leavesPerBlock*(blocksPerPlane-1),up:upFull},{leaves:leavesPerBlock,up:upLast}],RS,D,[2,4,8,16,32,64].filter(x=>x<=D)) : null;
+    const upFull = ceil(nodesPerBlock*railsPerLeaf*railSpeed/800/r), upLast = ceil(nLast*railsPerLeaf*railSpeed/800/r);
+    const stripe = leavesPerPlane<=RS ? evenStripe([{leaves:leavesPerBlock*(blocksPerPlane-1),up:upFull},{leaves:leavesPerBlock,up:upLast}],RS,U,stripeCands(U,r)) : null;
     let upCagesStriped = upCages, stripeInfo=null;
     if(stripe){
       spine = stripe.S*planes; stripeInfo=stripe;
       upCagesStriped = stripe.links*planes;
       const pl=stripe.groups.map(x=>`${x.leaves} leaf × ${x.k*stripe.S} up (${x.k} to each spine)`).join(" + ");
-      spineBasis = `flat 2-tier, even striping: ${stripe.S} spines/plane (even, divides every leaf's uplinks) — ${pl}; each spine ${stripe.spineDown}/${RS} down-ports; ${(stripe.links).toLocaleString()} leaf↔spine links/plane${stripe.links>upCagesPerPlane?` (≥1:1 — ${stripe.links-upCagesPerPlane} extra uplinks from rounding up to a multiple of ${stripe.S})`:" (exact 1:1)"}`;
-    } else if(R===64&&RS===64&&blocksPerPlane<=64){   /* SuperPOD B300 rail-aligned spine-group pattern — defined for 64-port switches only */
+      spineBasis = `flat 2-tier, even striping: ${stripe.S} spines/plane (even, divides every leaf's uplinks) — ${pl}; each spine ${stripe.spineDown}/${RS} down-ports; ${(stripe.links).toLocaleString()} leaf↔spine links/plane${stripe.links>upCagesPerPlane?` (≥${ratioTxt(r)} — ${stripe.links-upCagesPerPlane} extra uplinks from rounding up to a multiple of ${stripe.S})`:` (exact ${ratioTxt(r)})`}${r>1?` — leaf ${D} down / ${U} up cages (${r}:1 oversubscription, by design)`:""}`;
+    } else if(r>1&&R===64&&RS===64&&blocksPerPlane<=RS&&(()=>{ const h=U/2; for(let d=2;d<=h;d+=2) if(h%d===0&&blocksPerPlane*(h/d)<=RS) return true; return false; })()){
+      /* rail-aligned spine groups with an OVERSUBSCRIBED leaf: each leaf gives U/2 up-cages per rail; SG size = smallest even
+         divisor of U/2 whose spine down-ports (blocks × U/2 ÷ SG) fit the spine — spines stay 1:1 */
+      regime="sg"; const h=U/2; let sgSize=2; for(let d=2;d<=h;d+=2) if(h%d===0&&blocksPerPlane*(h/d)<=RS){ sgSize=d; break; }
+      var sgSizeV=sgSize, sgK=h/sgSize, sgLast=Math.max(1,ceil(upLast/2/sgSize));
+      spine = railsPerPlane*sgSize*planes;
+      upCagesStriped = (leavesPerBlock*(blocksPerPlane-1)*U + leavesPerBlock*2*sgSize*sgLast)*planes;
+      spineBasis = `2-tier, rail-aligned spine groups: ${railsPerPlane} SGs/plane × ${sgSize} spines (each leaf gives ${sgK} up-cage(s) per rail to every spine of that rail's SG${sgLast!==sgK?`; last-block leaves ${sgLast}`:""}; SG spine: ${blocksPerPlane} rail-leaves × ${sgK} = ${blocksPerPlane*sgK}/${RS} down-cages ✓) — leaf ${D} down / ${U} up (${r}:1 oversubscription, by design); DGX SuperPOD B300 Table 3 spine-group pattern`;
+    } else if(r===1&&R===64&&RS===64&&blocksPerPlane<=64){   /* SuperPOD B300 rail-aligned spine-group pattern — defined for 64-port switches only */
       /* rail-aligned spine groups (NVIDIA SuperPOD pattern): one SG per rail; a leaf's 32 up-cages
          split 16 per rail across its SG; SG size = ceil(blocks/4) (≤16, so every leaf reaches every
          SG spine); spine down = 64 cages from its rail's leaves. Reproduces SuperPOD B300 Table 3. */
@@ -1052,15 +1091,15 @@ const Engine = (() => {
       spineBasis = `2-tier, rail-aligned spine groups: ${railsPerPlane} SGs/plane × ${sgSize} spines (even: each leaf gives ${sgK} up-cage(s) per rail to every spine of that rail's SG${sgLast!==sgK?`; last-block leaves ${sgLast}`:""}; SG spine: ${blocksPerPlane} rail-leaves × ${sgK} = ${blocksPerPlane*sgK}/64 down-cages ✓) — DGX SuperPOD B300 Table 3 pattern`;
     } else {
       tier=3;
-      var f3=R===RS?fold3({U:D,R,lpb:leavesPerBlock,blocks:blocksPerPlane,planes,nodesPerBlock})
+      var f3=R===RS?fold3({U,Us:R/2,R,lpb:leavesPerBlock,blocks:blocksPerPlane,planes,nodesPerBlock})
         :{ok:false,pods:0,podNodes:0,why:`${leavesPerPlane} leaves/plane exceed the ${RS}-port spine — a 3-tier fabric with a different spine radix (${RS}) than the leaf (${R}) is not modeled; use a larger spine chassis or the same switch at every tier`};
       if(f3.ok){ pods=f3.pods; podNodes=f3.podNodes; spine=f3.spine; sspine=f3.sspine; coreGroups=f3.coreGroups; coreGroupSize=f3.coreGroupSize;
         var coreStripe=f3.coreStripe, overCore=false; linksSC=f3.linksSC; upCagesStriped=f3.linksLS; spineBasis=fold3Basis(f3,"800G cage"); }
       else { pods=f3.pods; podNodes=f3.podNodes; spine=0; sspine=0; var overCore=true, coreStripe=0; spineBasis=f3.why; }
     }
     const nIn = Math.min(nodes-(blocksPerPlane-1)*nodesPerBlock, nodesPerBlock);
-    const downG = nIn*railsPerLeaf*railSpeed, upG = stripeInfo ? stripeInfo.groups[stripeInfo.groups.length-1].k*stripeInfo.S*800 : downG;
-    const cagesUsed = ceil(nIn*railsPerLeaf/legsPerCage)+ceil(nIn*railsPerLeaf*railSpeed/800);
+    const downG = nIn*railsPerLeaf*railSpeed, upG = stripeInfo ? stripeInfo.groups[stripeInfo.groups.length-1].k*stripeInfo.S*800 : (r>1&&tier===3?U*800:ceil(downG/r/800)*800);
+    const cagesUsed = ceil(nIn*railsPerLeaf/legsPerCage)+ceil(nIn*railsPerLeaf*railSpeed/800/r);
     const upL = (tier===2||(typeof f3!=="undefined"&&f3.ok)) ? upCagesStriped : upCages;
     const linksAll = upL + linksSC;
     return {proto:"eth",planes,railSpeed,legsPerCage,railsPerPlane,leavesPerBlock,nodesPerBlock,stripe:stripeInfo,nLast,
@@ -1072,17 +1111,17 @@ const Engine = (() => {
       linksSS:linksAll, ssLinkG:800,
       xH:hostLinks, xLS:downCages, xSS:linksAll*2, cH: railSpeed>=400?hostLinks:ceil(hostLinks/2), cSS:linksAll*2,
       splitters: railSpeed<400?ceil(hostLinks/2):0,
-      R,RS,
-      proof:{nodesInBlock:nIn,downG,upG,cagesUsed,cagesAvail:R,ratio:"1:1",
-        tiers: tier===3?`leaf ${D}↓+${D}↑ · pod spine ${D}↓ (1 per pod leaf) + ${D}↑ to its core group · core ${R}↓ — all ≤ ${R}-cage radix`:`leaf ${D}↓+${D}↑ · spine ≤${RS}↓ — within ${R}-cage leaf / ${RS}-cage spine radix`}};
+      R,RS,D,U,ratio:r,
+      proof:{nodesInBlock:nIn,downG,upG,cagesUsed,cagesAvail:R,ratio:ratioTxt(r),
+        tiers: tier===3?`leaf ${D}↓+${U}↑ · pod spine ${U}↓ (1 per pod leaf) + ${U}↑ to its core group · core ${R}↓ — all ≤ ${R}-cage radix`:`leaf ${D}↓+${U}↑ · spine ≤${RS}↓ — within ${R}-cage leaf / ${RS}-cage spine radix`}};
   }
 
   /** NDR InfiniBand sizing on Quantum-2 (64×400G radix): rail-optimized fat tree
       per the DGX SuperPOD H100 pattern — SU = 32 nodes, 1 rail per leaf (8 leaves/SU),
       spines per published rows 4/8/16/16 at 1–4 SUs; computed 1:1 beyond. */
-  function sizeEWIB(cat, nodes, linksPerNode, planes){
-    const g=cat.golden.ib;
-    const nodesPerBlock=g.suNodes;
+  function sizeEWIB(cat, nodes, linksPerNode, planes, r=1){
+    const g=cat.golden.ib; r=Math.max(1,+r||1); const LS=leafSplit(64,r), U=LS.U;   /* QM9700: 64×400G — 1:1 ⇒ 32↓/32↑ */
+    const nodesPerBlock=r>1?LS.D:g.suNodes;              // r:1 ⇒ D hosts per rail block (one 400G port per host per rail leaf)
     const railsPerPlane=linksPerNode/planes;
     const leavesPerBlock=railsPerPlane;                 // 1 rail per leaf
     const blocks=ceil(nodes/nodesPerBlock);
@@ -1090,7 +1129,7 @@ const Engine = (() => {
     const hostLinks=nodes*linksPerNode;
     const leavesPerPlane=leaf/planes, upPortsPerPlane=ceil(hostLinks/planes); // 400G ports; leaf = 32↓/32↑
     let spine, spineBasis, beyond=false, tier=2, sspine=0, pods=0, podNodes=0, coreGroups=0, coreGroupSize=0, linksSC=0, ibStripe=null, ibUp=null;
-    if(planes===1 && linksPerNode===8 && blocks<=g.spineBySU.length){
+    if(r===1 && planes===1 && linksPerNode===8 && blocks<=g.spineBySU.length){
       spine=g.spineBySU[blocks-1];
       /* published row; a partial last SU's uplinks are rounded UP to a multiple of the spine count so
          every leaf stripes evenly (equal integer links to every spine, ≥1:1) — same rule as Ethernet */
@@ -1099,20 +1138,21 @@ const Engine = (() => {
       const sd=grp.reduce((a,x)=>a+x.leaves*x.k,0);
       ibStripe={S,groups:grp,spineDown:sd,links:S*sd,kMax:Math.max(...grp.map(x=>x.k)),kMin:Math.min(...grp.map(x=>x.k))}; ibUp=ibStripe.links;
       spineBasis=`DGX SuperPOD H100 RA published row (${blocks} SU) — ${grp.map(x=>`${x.leaves} leaf × ${x.k*S} up (${x.k} to each of ${S} spines)`).join(" + ")}${ibUp>hostLinks?` (≥1:1 — ${ibUp-hostLinks} extra uplinks from rounding the partial SU up to a multiple of ${S})`:""}`;
-    } else if(leavesPerPlane<=64 && (ibStripe=evenStripe([{leaves:leavesPerBlock*(blocks-1),up:nodesPerBlock},{leaves:leavesPerBlock,up:nodes-(blocks-1)*nodesPerBlock}]))){
+    } else if(leavesPerPlane<=64 && (ibStripe=(r===1?evenStripe([{leaves:leavesPerBlock*(blocks-1),up:nodesPerBlock},{leaves:leavesPerBlock,up:nodes-(blocks-1)*nodesPerBlock}])
+        :evenStripe([{leaves:leavesPerBlock*(blocks-1),up:ceil(nodesPerBlock/r)},{leaves:leavesPerBlock,up:ceil((nodes-(blocks-1)*nodesPerBlock)/r)}],64,U,stripeCands(U,r))))){
       spine=ibStripe.S*planes; ibUp=ibStripe.links*planes;
-      spineBasis=`flat 2-tier on QM9700, even striping: ${ibStripe.S} spines/plane — ${ibStripe.groups.map(x=>`${x.leaves} leaf × ${x.k*ibStripe.S} up (${x.k} to each spine)`).join(" + ")}; each spine ${ibStripe.spineDown}/64 down-ports`; beyond=true;
+      spineBasis=`flat 2-tier on QM9700, even striping: ${ibStripe.S} spines/plane — ${ibStripe.groups.map(x=>`${x.leaves} leaf × ${x.k*ibStripe.S} up (${x.k} to each spine)`).join(" + ")}; each spine ${ibStripe.spineDown}/64 down-ports${r>1?` — leaf ${LS.D} down / ${U} up ports (${r}:1 oversubscription, by design)`:""}`; beyond=true;
     } else {
       tier=3; beyond=true;
-      var f3i=fold3({U:32,R:64,lpb:leavesPerBlock,blocks,planes,nodesPerBlock});
+      var f3i=fold3({U,Us:32,R:64,lpb:leavesPerBlock,blocks,planes,nodesPerBlock});
       pods=f3i.pods; podNodes=f3i.podNodes;
       if(f3i.ok){ spine=f3i.spine; sspine=f3i.sspine; coreGroups=f3i.coreGroups; coreGroupSize=f3i.coreGroupSize; linksSC=f3i.linksSC; ibUp=f3i.linksLS;
         var coreStripeIB=f3i.coreStripe, overCoreIB=false; spineBasis=fold3Basis(f3i,"400G NDR port")+" (QM9700)"; }
       else { spine=0; sspine=0; var overCoreIB=true, coreStripeIB=0; spineBasis=f3i.why; }
     }
     const nIn=Math.min(nodes-(blocks-1)*nodesPerBlock,nodesPerBlock);
-    const downG=nIn*1*400, upG=downG;
-    const upIB = ibUp!=null ? ibUp : hostLinks;
+    const downG=nIn*1*400, upG=r>1?(ibStripe?ibStripe.groups[ibStripe.groups.length-1].k*ibStripe.S*400:U*400):downG;
+    const upIB = ibUp!=null ? ibUp : ceil(hostLinks/r);
     const linksAll=upIB+linksSC;                                   // leaf↔spine + spine↔core, all 400G
     return {proto:"ib",planes,railSpeed:400,legsPerCage:2,railsPerPlane,leavesPerBlock,nodesPerBlock,
       blocks,leaf,spine,sspine,tier,tier3:tier===3,pods,podNodes,coreGroups,coreGroupSize,linksSC,
@@ -1120,9 +1160,9 @@ const Engine = (() => {
       hostLinks, links400:upIB, linksSS:linksAll, ssLinkG:400, spineBasis, beyond, stripe:ibStripe,
       fold:(typeof f3i!=="undefined")?f3i:null, infeasible:(typeof f3i!=="undefined"&&!f3i.ok)?f3i.why:null,
       xH:hostLinks, xLS:ceil(hostLinks/2), xSS:ceil(linksAll/2)*2, cH:hostLinks, cSS:linksAll,
-      splitters:0,
-      proof:{nodesInBlock:nIn,downG,upG,cagesUsed:nIn+ceil(nIn/2)+ceil(nIn/2),cagesAvail:64,ratio:"1:1",
-        note:"QM9700: 32 down + 32 up 400G ports per leaf"+(tier===3?" · pod spine 32↓/32↑ · core 64↓":"")}};
+      splitters:0, D:r>1?LS.D:32, U, ratio:r, R:64, RS:64,
+      proof:{nodesInBlock:nIn,downG,upG,cagesUsed:nIn+ceil(nIn/r),cagesAvail:64,ratio:ratioTxt(r),
+        note:`QM9700: ${r>1?LS.D:32} down + ${U} up 400G ports per leaf`+(tier===3?` · pod spine ${U}↓/${U}↑ · core 64↓`:"")}};
   }
 
   /** DGX SuperPOD B300 + Quantum-X800 XDR (Q3400-RA, 144×800G): SU = 72 nodes, 8 rails (1×800G XDR per GPU),
@@ -1168,12 +1208,15 @@ const Engine = (() => {
   /** Switch radix in 800G cages (64 for SN5600/SN5610-class; a chassis spine = its largest chassis). */
   const radixOf=sw=>sw?(sw.cages||sw.ports800||64):64;
   function sizeEW(cat,input,nic,gpu,sw,spSw){
-    if(input.ewproto==="ib") return sizeEWIB(cat, input.nodes, nic.ports*input.ewnicn, input.planes);
-    if(sw&&sw.kind==="des") return sizeEWDES(input.nodes, nic.ports*input.ewnicn, input.planes, nic.speedG, sw.des);
+    const r=ovrOf(input);
+    if(input.ewproto==="ib") return sizeEWIB(cat, input.nodes, nic.ports*input.ewnicn, input.planes, r);
+    if(sw&&sw.kind==="des") return {...sizeEWDES(input.nodes, nic.ports*input.ewnicn, input.planes, nic.speedG, sw.des),ratio:1,
+      ratioNA:r>1?`the Arista 7700R4 Distributed Etherlink Switch has a fixed 18 host : 20 fabric port split per leaf (datasheet) — a ${r}:1 leaf split is not a DES configuration`:null};
     const R=radixOf(sw), RS=spSw&&spSw!==sw?radixOf(spSw):R;
     if(R===64&&RS===64&&gpu&&gpu.profile==="rtx"&&input.planes===1&&input.nodes<=cat.golden.rtx.maxNodes&&nic.ports*input.ewnicn===4&&nic.speedG===400)
-      return sizeEWRTX(cat,input.nodes);
-    return sizeEWCore(input.nodes, nic.ports*input.ewnicn, input.planes, nic.speedG, R, RS);
+      return {...sizeEWRTX(cat,input.nodes),ratio:1,
+        ratioNA:r>1?`the RTX PRO RA collapsed leaf pair (Table 6) is already the smallest E-W fabric — 2 leaves, no spine tier; there are no leaf uplinks to a spine to oversubscribe`:null};
+    return sizeEWCore(input.nodes, nic.ports*input.ewnicn, input.planes, nic.speedG, R, RS, r);
   }
   /** Arista 7700R4 Distributed Etherlink Switch (DS Aug 11, 2025): leaves 7700R4C-38PE (18 host + 20 fabric × 800G),
       spines 7720R4-128PE (128 × 800G); every leaf connects to every spine with its 20 fabric ports spread evenly —
@@ -1417,14 +1460,15 @@ const Engine = (() => {
       every leaf stripes equal integer links to every spine it reaches, ≥1:1 at every tier). */
   function audit(ew){
     const v=[], P=ew.planes||1, xdr=!!ew.xdr, ib=ew.proto==="ib"&&!xdr;
-    const R = xdr?144:(ew.R||64), RS = xdr?144:(ew.RS||R), Uh=R/2;   // leaf / spine radix in the fabric's link unit (800G cage / 400G NDR port / 800G XDR port)
+    const R = xdr?144:(ew.R||64), RS = xdr?144:(ew.RS||R);   // leaf / spine radix in the fabric's link unit (800G cage / 400G NDR port / 800G XDR port)
+    const rr=Math.max(1,ew.ratio||1), Dh = xdr?72:(ew.D||R/2), Uh = xdr?72:(ew.U||R/2);   // leaf down / up port budget (1:1 ⇒ R/2 each; r:1 ⇒ leafSplit)
     const chk=(c,m)=>{ if(!c) v.push(m); };
     if(ew.infeasible) return [ew.infeasible];
     if(ew.mixed){
       if(ew.manual){ chk(ew.mg.links800<=ew.spine*RS, `spines: ${ew.mg.links800} links > ${ew.spine}×${RS} ports`); return v; }
       const lay=ew.mg.layout; if(!lay||!lay.ok){ v.push("mixed fabric without a layout"); return v; }
       chk(lay.L===ew.leaf&&lay.stripe.S===ew.spine, "mixed layout ≠ switch counts");
-      for(const lf of lay.leaves){ chk(lf.down<=Uh, `leaf ${lf.leaf}: ${lf.down} host cages > ${Uh}`); chk(lf.up>=lf.down&&lf.up<=Uh, `leaf ${lf.leaf}: up ${lf.up} vs down ${lf.down}`);
+      for(const lf of lay.leaves){ chk(lf.down<=Dh, `leaf ${lf.leaf}: ${lf.down} host cages > ${Dh}`); chk(lf.up*rr>=lf.down&&lf.up<=Uh&&lf.up+lf.down<=R, `leaf ${lf.leaf}: up ${lf.up} vs down ${lf.down} (${ratioTxt(rr)})`);
         const g={}; for(const u of lf.units) g[u.g]=(g[u.g]||0)+u.bw;
         chk(lf.down===Object.values(g).reduce((a,bw)=>a+Math.ceil(bw/800),0), `leaf ${lf.leaf}: cage count ≠ its rail units`); }
       chk(lay.stripe.spineDown<=RS, `spine down ${lay.stripe.spineDown} > ${RS}`);
@@ -1448,12 +1492,12 @@ const Engine = (() => {
     if(ew.rtx){ const up=ew.links800;   /* each ISL takes one port on EACH leaf of the pair */ chk(down+up<=R, `RTX leaf ${down}+${up} > ${R}`); chk(up*800>=down*800-1, "RTX ISL below 1:1"); return v; }
     if(ew.tier===3){
       const f=ew.fold; if(!f||!f.ok){ v.push("3-tier fabric without a feasible fold"); return v; }
-      chk(down<=Uh, `leaf down ${down} > ${Uh}`);
+      chk(down<=Dh, `leaf down ${down} > ${Dh}`);
       chk(f.coreDown<=R, `core switch down-ports ${f.coreDown} > ${R}`);
       let leaves=0;
       for(const x of f.podInfo){ leaves+=x.L;
-        chk(Uh%x.Sp===0&&x.k*x.Sp===Uh, `pod with ${x.L} leaves: ${Uh} uplinks don't stripe evenly over ${x.Sp} spines`);
-        chk(x.down<=Uh&&x.down+x.up<=R, `pod spine ${x.down}↓+${x.up}↑ > ${R}`);
+        chk(f.U%x.Sp===0&&x.k*x.Sp===f.U&&f.U<=Uh&&f.U*rr>=down, `pod with ${x.L} leaves: ${f.U} uplinks don't stripe evenly over ${x.Sp} spines (or break ${ratioTxt(rr)})`);
+        chk(x.down<=(f.Us||f.U)&&x.down+x.up<=R, `pod spine ${x.down}↓+${x.up}↑ > ${R}`);
         chk(x.up>=x.down, `pod spine below 1:1 (${x.up} up < ${x.down} down)`); }
       chk(leaves===lp, `pods hold ${leaves} leaves ≠ ${lp} per plane`);
       chk(f.podInfo.reduce((a,x)=>a+x.Sp,0)===sp, `pod spines ${f.podInfo.reduce((a,x)=>a+x.Sp,0)} ≠ ${sp} per plane`);
@@ -1464,8 +1508,8 @@ const Engine = (() => {
     if(ew.regime==="sg"&&ew.sg){
       const sg=ew.sg, groups=ew.railsPerPlane;
       chk(sp===groups*sg.size, `spine groups ${groups}×${sg.size} ≠ ${sp}`);
-      chk(16%sg.size===0, `SG size ${sg.size} doesn't divide 16`);
-      chk(2*sg.k*sg.size<=Uh&&down<=Uh, `leaf ${down}↓/${2*sg.k*sg.size}↑ exceeds ${Uh}/${Uh}`);
+      chk((Uh/2)%sg.size===0, `SG size ${sg.size} doesn't divide ${Uh/2}`);
+      chk(2*sg.k*sg.size<=Uh&&down<=Dh, `leaf ${down}↓/${2*sg.k*sg.size}↑ exceeds ${Dh}/${Uh}`);
       chk(ew.blocks*sg.k<=R, `SG spine down ${ew.blocks*sg.k} > ${R}`);
       return v;
     }
@@ -1481,8 +1525,9 @@ const Engine = (() => {
     if(!st){ v.push(`2-tier fabric with ${sp} spines but no striping plan`); return v; }
     chk(st.S===sp, `stripe over ${st.S} spines ≠ ${sp}`);
     chk(st.groups.reduce((a,g)=>a+g.leaves,0)===lp, `stripe covers ${st.groups.reduce((a,g)=>a+g.leaves,0)} leaves ≠ ${lp}`);
-    for(const g of st.groups){ chk(Number.isInteger(g.k)&&g.k>=1, `non-integer per-spine links ${g.k}`); chk(g.k*st.S<=Uh, `leaf up ${g.k*st.S} > ${Uh}`); chk(g.k*st.S>=g.up, `leaf below 1:1 (${g.k*st.S} < ${g.up})`); }
-    chk(down<=Uh, `leaf down ${down} > ${Uh}`);
+    for(const g of st.groups){ chk(Number.isInteger(g.k)&&g.k>=1, `non-integer per-spine links ${g.k}`); chk(g.k*st.S<=Uh, `leaf up ${g.k*st.S} > ${Uh}`); chk(g.k*st.S>=g.up, `leaf below ${ratioTxt(rr)} (${g.k*st.S} < ${g.up})`); }
+    chk(down<=Dh, `leaf down ${down} > ${Dh}`);
+    chk(st.groups.every(g=>g.leaves===0||g.k*st.S+down<=R), `leaf down+up exceeds the ${R}-port radix`);
     chk(st.spineDown<=RS, `spine down ${st.spineDown} > ${RS} ports`);
     chk(lp<=RS, `${lp} leaves per plane cannot all reach a ${RS}-port spine`);
     return v;
@@ -1556,7 +1601,7 @@ const Engine = (() => {
     for(const x of sw) x.free=ports-x.ports;
     return {S,ports,switches:sw};
   }
-  return {radixOf,sizeEWDES,nsLayout,oobLayout,sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS,mixedLayout,railMap,railHome,railLeafMap,railTxt,railMapTxt,isRailOpt};
+  return {radixOf,leafSplit,OVERSUB,ovrOf,ratioTxt,stripeCands,sizeEWDES,nsLayout,oobLayout,sizeEW,sizeEWCore,sizeEWIB,sizeEWRTX,sizeEWXDR,sizeNS,sizeOOB,headroom,pickSwitch,autoEwSwitch,ibPortsPerNic,selfTest,find,evenStripe,audit,auditNS,fold3,closLS,mixedLayout,railMap,railHome,railLeafMap,railTxt,railMapTxt,isRailOpt};
 })();
 
 /* =====================================================================
@@ -1572,6 +1617,8 @@ const Validator = (() => {
    LAYER 3 — BOM BUILDER (pure). End-to-end: every link is paired
    host-end + switch-end from validated matrices, or flagged.
    ===================================================================== */
+/* E-W leaf ratio wording for every view / summary: "1:1 non-blocking" or "2:1 oversubscribed (leaf)" */
+function ovsTxt(bom,short){ const r=(bom&&bom.ratio)||1; return r>1?(short?`${r}:1`:`${r}:1 oversubscribed (leaf)`):(short?"1:1":"1:1 non-blocking"); }
 function buildBOM(input){
   const C=CATALOG, E=Engine, V=Validator;
   const flags=[], lines=[], notes=[];
@@ -1684,6 +1731,8 @@ function buildBOM(input){
   if(!isIB&&ewSwitch&&ewSwitch.spineOnly) throw new Error(`E-W fabric not physically buildable: ${ewSwitch.id} is a spine-only modular chassis — select a leaf model and choose ${ewSwitch.id} as the spine/core model.`);
   if(mixed&&ewSwitch&&ewSwitch.kind==="des") throw new Error("E-W fabric not physically buildable: mixed host groups on the Distributed Etherlink Switch are not modeled — use fixed leaf/spine switches for mixed groups.");
   const ewR=isIB?64:E.radixOf(ewSwitch), ewRS=isIB?64:E.radixOf(ewSpine);
+  const ovr=E.ovrOf(input), ovrT=E.ratioTxt(ovr);        /* E-W leaf oversubscription target (Custom input; RA ⇒ 1:1) */
+  const conflicts=[];   /* specs that CANNOT be built as entered: reason + best alternative — the UI asks before proceeding */
   /* Switch-side optic per switch model: OEM matrix for 800G OSFP cages; Arista QSFP-DD 800G and 1.6T OSFP cages
      resolved from the Arista Transceiver Guide (Jul 2026). per = 800G links carried by one physical module. */
   const swOptic=(sw,mixTxt=mixed)=>{
@@ -1727,16 +1776,16 @@ function buildBOM(input){
     const ports2=g2.nodes*r2, s2=g2.ewn.speedG||400;
     const downG=ports1*s1+ports2*s2;
     const groupsDef=[{g:1,nodes:input.nodes,gph:input.gph,ports:r1,sp:s1,railOpt:E.isRailOpt(input.ewnicn,input.gph)},{g:2,nodes:g2.nodes,gph:g2.gph,ports:r2,sp:s2,railOpt:E.isRailOpt(g2.ewnicn,g2.gph)}];   /* rails = GPUs per host; ports map onto them (E.railMap) */
-    const lay=E.mixedLayout(groupsDef,{R:ewR,RS:ewRS});
+    const lay=E.mixedLayout(groupsDef,{R:ewR,RS:ewRS,r:ovr});
     if(!lay.ok) return {mixed:true,infeasible:lay.why,tier:2,planes:1,proto:"eth",leaf:0,spine:0,sspine:0,mg:{downG,ports1,s1,ports2,s2,links800:0,twinHost:0}};
     const leaf=lay.L, spine=lay.stripe.S, links800=lay.stripe.links;
-    return {mixed:true,tier:2,regime:"mixed",planes:1,proto:"eth",rtx:false,R:ewR,RS:ewRS,
+    return {mixed:true,tier:2,regime:"mixed",planes:1,proto:"eth",rtx:false,R:ewR,RS:ewRS,D:lay.D,U:lay.U,ratio:ovr,
       leaf,spine,sspine:0,coreGroups:0,coreGroupSize:0,pods:0,blocks:1,leavesPerBlock:leaf,nodesPerBlock:totalN,
       railsPerPlane:0,railSpeed:400,hostLinks:ports1+ports2,links800,linksSS:links800,ssLinkG:800,upCages:links800,
       xH:ports1+ports2,xLS:lay.downCages,xSS:2*links800,cH:ports1+ports2,cSS:2*links800,splitters:0,legsPerCage:2,overCore:false,stripe:lay.stripe,
-      spineBasis:`shared 2-tier fabric, rail-aligned mixed layout (group 1: ${groupsDef[0].railOpt?`rail-optimized, ${E.railMapTxt(input.gph,r1)}`:`NOT rail-optimized — ${input.ewnicn} NICs for ${input.gph} GPUs, ${r1} ports spread evenly`}; group 2: ${groupsDef[1].railOpt?`rail-optimized, ${E.railMapTxt(g2.gph,r2)}`:`NOT rail-optimized — ${g2.ewnicn} NICs for ${g2.gph} GPUs, ${r2} ports spread evenly`}): ${lay.units.length} rail units (group × host block × GPU rail) placed ${lay.aligned?"on their rail-home leaves (rail k of every host → the same leaf; a leaf with several rails keeps each as a logically dedicated partition)":"balanced (rail-home placement exceeded 32 cages/leaf at this size — each rail still whole on one leaf)"} over ${leaf} leaves (≤32 host-facing cages each, 1:1); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
+      spineBasis:`shared 2-tier fabric, rail-aligned mixed layout (group 1: ${groupsDef[0].railOpt?`rail-optimized, ${E.railMapTxt(input.gph,r1)}`:`NOT rail-optimized — ${input.ewnicn} NICs for ${input.gph} GPUs, ${r1} ports spread evenly`}; group 2: ${groupsDef[1].railOpt?`rail-optimized, ${E.railMapTxt(g2.gph,r2)}`:`NOT rail-optimized — ${g2.ewnicn} NICs for ${g2.gph} GPUs, ${r2} ports spread evenly`}): ${lay.units.length} rail units (group × host block × GPU rail) placed ${lay.aligned?"on their rail-home leaves (rail k of every host → the same leaf; a leaf with several rails keeps each as a logically dedicated partition)":"balanced (rail-home placement exceeded 32 cages/leaf at this size — each rail still whole on one leaf)"} over ${leaf} leaves (≤${lay.D} host-facing cages each, ${ovr>1?`${ovrT} oversubscribed by design`:"1:1"}); ${spine} spines — ${lay.stripe.groups.map(g=>`${g.leaves} leaf × ${g.k*spine} up (${g.k} to each spine)`).join(" + ")}`,
       mg:{downG,links800,ports1,s1,ports2,s2,r1,r2,twinHost:lay.downCages,layout:lay,groupsDef},
-      proof:{nodesInBlock:totalN,downG,upG:links800*800,ratio:`${(links800*800/downG>=1?"≥1":"<1")}:1 (non-blocking)`,cagesUsed:"mixed",cagesAvail:64}};
+      proof:{nodesInBlock:totalN,downG,upG:links800*800,ratio:ovr>1?`${(downG/(links800*800)).toFixed(2)}:1 (≤ ${ovrT} target)`:`${(links800*800/downG>=1?"≥1":"<1")}:1 (non-blocking)`,cagesUsed:"mixed",cagesAvail:64}};
   })() : E.sizeEW(C,input,ewnEff,gpu,ewSwitch,ewSpine);
   /* Cisco E-W silicon validation (Cisco N9100 DS Jun 11 2026 + FAQ Mar 16 2026): this app sizes
      NVIDIA-RA (Spectrum-X-class) rail-optimized fabrics; Cisco's Spectrum-4-based N9164E-NS4-O is
@@ -1750,7 +1799,11 @@ function buildBOM(input){
   }
   /* Q3400-RA on IB ⇒ size per the DGX SuperPOD B300 Quantum-X800 RA (replaces the old NDR placeholder) */
   const xdrRA = isIB && !mixed && ewSwitch && ewSwitch.id==="Q3400-RA";
-  if(xdrRA) ew = E.sizeEWXDR(C,input.nodes);
+  if(xdrRA) ew = {...E.sizeEWXDR(C,input.nodes),ratio:1,ratioNA:ovr>1?`the DGX SuperPOD B300 Quantum-X800 RA fabric (Q3400-RA) is published 1:1 — every leaf 72 down / 72 up, built for full 72-node SUs; a ${ovrT} leaf split is not an RA configuration`:null};
+  if(ew&&ew.ratioNA){
+    conflicts.push({id:"ratio",title:`${ovrT} oversubscription can't be applied to this E-W fabric`,reasons:[ew.ratioNA],
+      alt:`1:1 non-blocking — ${ew.leaf} leaf + ${ew.spine} spine${ew.sspine?` + ${ew.sspine} core`:""} (the fabric as specified, without oversubscription)`,patch:{oversub:"1"}});
+    flags.push(V.flag(`${ovrT} oversubscription not applied — E-W built 1:1`,ew.ratioNA)); }
   /* ---- MANUAL E-W switch counts (Custom): rebuild links/optics around the user's leaf+spine totals
      with the same rules the auto sizer uses (hosts fill rail blocks SU by SU, equal integer uplinks to
      every spine rounded UP, rail-aligned spine groups when leaves exceed the spine radix), and flag
@@ -1759,10 +1812,12 @@ function buildBOM(input){
     const L=Math.max(0,Math.floor(+input.ewleafn)), S=Math.max(0,Math.floor(+input.ewspinen||0));
     const P=ew.planes||1, auto={leaf:ew.leaf,spine:ew.spine,sspine:ew.sspine||0}; let mLayM=null;
     const xdr=!!ew.xdr, ibN=ew.proto==="ib"&&!xdr, eth=!xdr&&!ibN;
+    const mS=E.leafSplit(ibN?64:ewR,xdr?1:ovr);     /* leaf down / up budget at the target ratio (1:1 ⇒ R/2 each) */
     const R = xdr?{down:72,up:72,spine:144,unit:"800G XDR port",lG:800}
-            : ibN?{down:32,up:32,spine:64,unit:"400G NDR port",lG:400}
-            :     {down:ewR/2,up:ewR/2,spine:ewRS,unit:"800G cage",lG:800};
-    const mfl=[], hard=[]; const mflag=(t,n,h)=>{ mfl.push(V.flag(t,n)); if(h) hard.push(t); };
+            : ibN?{down:mS.D,up:mS.U,spine:64,unit:"400G NDR port",lG:400}
+            :     {down:mS.D,up:mS.U,spine:ewRS,unit:"800G cage",lG:800};
+    const rT=xdr?1:ovr;
+    const mfl=[], hard=[], hardD=[]; const mflag=(t,n,h)=>{ mfl.push(V.flag(t,n)); if(h){ hard.push(t); hardD.push(`${t} — ${n}`); } };
     mflag(`Manual E-W switch counts: ${L} leaf + ${S} spine`,`user-set counts replace the engine's ${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""} sizing — every design-rule check below is applied; leaf/spine lines are DATASHEET-VERIFIED, not RA-VALIDATED`);
     if(auto.sspine) mflag("Manual counts collapse a 3-tier fabric to 2 tiers",`the engine needs a core tier (${auto.sspine} switches) at this scale — a 2-tier fabric with these counts cannot be non-blocking`,1);
     if(P>1&&(L%P||S%P)) mflag(`Manual counts don't split evenly across ${P} planes`,`${L} leaf / ${S} spine must each be divisible by ${P} (identical planes) — sized with ${Math.floor(L/P)} leaf + ${Math.floor(S/P)} spine per plane`);
@@ -1771,17 +1826,17 @@ function buildBOM(input){
     const lp=Math.max(1,Math.floor(L/P)), sp=Math.floor(S/P);
     /* per-leaf load model */
     const railsPerLeaf = eth?2:1, lg=ew.legsPerCage||2, rs=ew.railSpeed||400;
-    const dn=n=> eth?Math.ceil(n*railsPerLeaf/lg):n, upn=n=> eth?Math.ceil(n*railsPerLeaf*rs/800):n;
+    const dn=n=> eth?Math.ceil(n*railsPerLeaf/lg):n, upn=n=> eth?Math.ceil(n*railsPerLeaf*rs/800/rT):Math.ceil(n/rT);
     const lpb=ew.mixed?0:(ew.leavesPerBlock||0), cap=ew.nodesPerBlock||1;
     const aligned=!ew.mixed&&lpb>0&&lp%lpb===0;
     let groups, blocksM=1, lpbM=lp, idle=0;
     if(ew.mixed){
       /* rail-aligned layout over the USER's leaf count — the same placement rule as Auto, so every view stays exact */
-      mLayM=ew.mg.groupsDef?E.mixedLayout(ew.mg.groupsDef,{L:lp,R:ewR,RS:ewRS}):null;
+      mLayM=ew.mg.groupsDef?E.mixedLayout(ew.mg.groupsDef,{L:lp,R:ewR,RS:ewRS,r:ovr}):null;
       if(mLayM){ const by={}; mLayM.leaves.forEach(l=>{ by[l.down]=(by[l.down]||0)+1; });
         { const idleM=mLayM.leaves.filter(l=>!l.down).length; if(idleM) mflag(`${idleM} of ${lp} leaf switch(es) carry no hosts`,`rails are GPUs (rail k of every host → its rail-home leaf): ${lp} leaves for ${Math.max(...ew.mg.groupsDef.map(d=>d.gph))}-rail hosts leave ${idleM} leaf(s) with no rail to serve — spare capacity; they still take spine ports. Use a leaf count that divides or is divided by the GPUs per host for an even rail layout`); }
-        groups=Object.entries(by).map(([d,n])=>({leaves:n,down:+d,up:+d})).sort((a,b)=>b.down-a.down); }
-      else { const dT=Math.ceil(ew.mg.downG/800/P); groups=[{leaves:lp,down:Math.ceil(dT/lp),up:Math.ceil(dT/lp)}]; }
+        groups=Object.entries(by).map(([d,n])=>({leaves:n,down:+d,up:Math.ceil(+d/rT)})).sort((a,b)=>b.down-a.down); }
+      else { const dT=Math.ceil(ew.mg.downG/800/P); groups=[{leaves:lp,down:Math.ceil(dT/lp),up:Math.ceil(Math.ceil(dT/lp)/rT)}]; }
     } else if(aligned){
       blocksM=lp/lpb; lpbM=lpb;
       const need=Math.ceil(input.nodes/cap);
@@ -1799,12 +1854,16 @@ function buildBOM(input){
       }
     } else {
       if(lpb) mflag(`Rail alignment broken (${lp} leaf per plane)`,`the rail-optimized design needs a multiple of ${lpb} leaves per plane (${eth?"each leaf carries 2 rails":"one leaf per rail"} of a ${cap}-host block) so GPU-N of every host lands on the same leaf — host ports spread evenly instead`);
-      const dT=Math.ceil(ew.hostLinks/P/(eth?lg:1)), uT=eth?Math.ceil(ew.hostLinks/P*rs/800):Math.ceil(ew.hostLinks/P);
+      const dT=Math.ceil(ew.hostLinks/P/(eth?lg:1)), uT=eth?Math.ceil(ew.hostLinks/P*rs/800/rT):Math.ceil(ew.hostLinks/P/rT);
       groups=[{leaves:lp,down:Math.ceil(dT/lp),up:Math.ceil(uT/lp)}];
     }
     groups=groups.filter(g=>g.leaves>0);
     const maxDown=Math.max(...groups.map(g=>g.down));
-    if(maxDown>R.down&&!(aligned&&blocksM<Math.ceil(input.nodes/cap))) mflag(`Too few leaf switches for the host ports`,`${maxDown} host-facing ${R.unit}s per leaf > ${R.down} available`,1);
+    const Rtot=xdr?144:ibN?64:ewR;
+    /* a leaf fits when its host ports + the uplinks the target ratio needs stay within the radix (1:1 ⇒ ≤ R/2 down) */
+    const downOk = rT>1 ? maxDown+Math.ceil(maxDown/rT)<=Rtot : maxDown<=R.down;
+    if(!downOk&&!(aligned&&blocksM<Math.ceil(input.nodes/cap))) mflag(`Too few leaf switches for the host ports`,rT>1?`${maxDown} host-facing ${R.unit}s per leaf + ${Math.ceil(maxDown/rT)} uplinks (${rT}:1) > ${Rtot} ports`:`${maxDown} host-facing ${R.unit}s per leaf > ${R.down} available`,1);
+    if(rT>1&&downOk) R.up=Math.max(R.up,Rtot-maxDown);
     let links=0, ratioV=0, regimeM="flat", note="";
     if(sp===0){
       if(lp>1&&!(ew.rtx&&lp===2)) mflag(`${lp} leaves per plane with no spine`,`more than one leaf needs a spine tier (or the RTX PRO collapsed-pair ISL) to interconnect — the fabric is not connected`,1);
@@ -1842,16 +1901,20 @@ function buildBOM(input){
       mflag(`Spine radix exceeded`,`${lp} leaves per plane exceed the ${R.spine}-port spine — a 2-tier fabric needs ≤ ${R.spine} leaves per plane${eth?" (or rail-aligned leaf blocks for spine groups)":""}; a 3rd tier is required`,1);
       note="not cablable as 2-tier";
     }
-    const ratio=`${ratioV.toFixed(2)} : 1`;
-    if(ratioV>1.0001) mflag(`E-W oversubscribed ${ratio}`,`leaf uplink capacity is below the host-facing bandwidth — the RAs require 1:1 non-blocking for GPU fabrics; add spines (or rebalance leaves) to restore 1:1`,1);
+    const ratio=`${(ratioV*rT).toFixed(2)} : 1`;     /* actual leaf down:up (ratioV = needed-at-target ÷ provided) */
+    if(ratioV>1.0001) mflag(`E-W oversubscribed ${ratio}`,rT>1?`leaf uplink capacity is below the ${rT}:1 target you set — add spines (or leaves) to reach ${rT}:1`:`leaf uplink capacity is below the host-facing bandwidth — the RAs require 1:1 non-blocking for GPU fabrics; add spines (or rebalance leaves) to restore 1:1`,1);
     /* 1:1 IS A HARD RULE: manual counts that cannot carry every host port non-blocking (oversubscribed, host
        ports overflowing the leaves, spine ports exhausted, radix/tier exceeded, disconnected) are REJECTED —
        the BOM keeps the engine's proven 1:1 sizing and never prices an oversubscribed leaf↔spine optic/fiber set */
     if(hard.length){
       const also=mfl.slice(1).map(f=>f.text).filter(t=>!hard.includes(t));
-      ew.manualRejected={L,S,reasons:hard.slice(),also,ratio};
-      flags.push(V.flag(`Manual E-W counts ${L} leaf + ${S} spine REJECTED — cannot be 1:1 non-blocking`,
-        `${hard.join("; ")}${ratioV>1.0001?` (would be ${ratio})`:""}. The BOM, optics and fibers use the engine's 1:1 sizing instead: ${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""}. Enter at least these counts (or switch Switch count to Auto)${also.length?`. Also: ${also.join("; ")}`:""}`));
+      const tgt=rT>1?`${rT}:1`:"1:1 non-blocking";
+      ew.manualRejected={L,S,reasons:hard.slice(),detail:hardD.slice(),also,ratio,target:rT};
+      flags.push(V.flag(`Manual E-W counts ${L} leaf + ${S} spine REJECTED — cannot be ${tgt}`,
+        `${hard.join("; ")}${ratioV>1.0001?` (would be ${ratio})`:""}. The BOM, optics and fibers use the engine's ${rT>1?`${rT}:1`:"1:1"} sizing instead: ${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""}. Enter at least these counts (or switch Switch count to Auto)${also.length?`. Also: ${also.join("; ")}`:""}`));
+      conflicts.push({id:"ewcount",title:`E-W switch counts ${L} leaf + ${S} spine can't be built at ${rT>1?`${rT}:1`:"1:1"}`,reasons:hardD.slice(),also,
+        alt:`${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""} — the engine's ${rT>1?`${rT}:1`:"1:1"} sizing for these hosts`,
+        patch:{ewleafn:auto.leaf,ewspinen:auto.spine+auto.sspine},L,S});
     } else {
     flags.push(...mfl);
     const linksAll=links*P;
@@ -1874,6 +1937,8 @@ function buildBOM(input){
     delete ew.__stripe;
   }
   { const av=E.audit(ew); if(av.length) flags.unshift(V.flag(`PHYSICAL PORT AUDIT FAILED — design not buildable as drawn`,av.join("; "))); ew.auditFail=av; }
+  if(ovr>1&&!ew.ratioNA&&!ew.manualRejected)
+    flags.push(V.flag(`E-W leaf oversubscribed ${ovrT} by design`,`set in the design inputs — each leaf carries up to ${ew.D} host-facing ${isIB?"400G ports":"800G cages"} and ${ew.U} uplinks, so traffic leaving a leaf gets ≥ 1/${ovr} of its host bandwidth; the NVIDIA RAs (HGX AI Factory, DGX SuperPOD) specify a 1:1 non-blocking GPU fabric — cross-leaf collectives (all-reduce, all-to-all) run at up to 1/${ovr} of line rate under full load. Leaf/spine counts are DATASHEET-VERIFIED, not RA-VALIDATED`));
   if(ew.infeasible && !ew.manual) throw new Error(`E-W fabric not physically buildable: ${ew.infeasible}. Options: ${isIB&&!ew.xdr?"choose the Quantum-X800 XDR fabric (ConnectX-8 C8180 on InfiniBand — 144-port Q3400), ":""}${!isIB&&!mixed&&(input.planes||1)===1?"select 2 E-W planes (halves the hosts per plane), ":""}reduce the host count, or split the cluster into separate fabrics.`);
   const xdrSel=!!(ewSwitch&&ewSwitch.xdr) && !xdrRA;
   if(xdrSel) flags.push(V.flag(`${ewSwitch.id} (Quantum-X800 / Quantum-3 XDR) E-W fabric`,
@@ -1911,9 +1976,9 @@ function buildBOM(input){
     }
     if(!ewSwitch.aiDesign) flags.push(V.flag(`${ewSwitch.oem} E-W fabric topology rules`,ewSwitch.aiNeeds));
     lines.push(V.line({fabric:"ew",sku:ewSwitch.sku,desc:ewSwitch.label+" — shared E-W leaf (mixed host groups)",role:"Leaf",
-      qty:ew.leaf, math:`${mgf.downG.toLocaleString()}G total host bandwidth ÷ ${(ewR/2*800).toLocaleString()}G per leaf (${ewR/2}×800G down-cages, 1:1), min 2`,
+      qty:ew.leaf, math:`${mgf.downG.toLocaleString()}G total host bandwidth ÷ ≤${((ew.D||ewR/2)*800).toLocaleString()}G per leaf (≤${ew.D||ewR/2}×800G down-cages, ${ovrT}), min 2`,
       status:"VERIFIED",cites:ewSwitch.cites,eol:!!ewSwitch.eol}));
-    if(ew.spine>0) spineLines(ew.spine, (ew.stripe&&ew.stripe.spineDown)||ewRS, " — shared E-W spine (mixed host groups)",`${mgf.links800.toLocaleString()}×800G uplinks ÷ ${ewRS} cages/switch, min 2 (1:1)`,"VERIFIED",ewSpine.cites);
+    if(ew.spine>0) spineLines(ew.spine, (ew.stripe&&ew.stripe.spineDown)||ewRS, " — shared E-W spine (mixed host groups)",`${mgf.links800.toLocaleString()}×800G uplinks ÷ ${ewRS} cages/switch, min 2 (${ovrT} at the leaf)`,"VERIFIED",ewSpine.cites);
     const mlo=swOptic(ewSwitch), mxmVal=mlo.status==="VALIDATED";
     const mSku=mlo.sku, mDesc=mlo.desc, mCites=mlo.cites, mSt=mxmVal?"VERIFIED":mlo.status, mxm={needs:mlo.needs};
     for(const G of gl){
@@ -1931,7 +1996,7 @@ function buildBOM(input){
     }
     lines.push(V.line({fabric:"ew",sku:mSku,desc:mDesc+" — leaf, host-facing (mixed groups)",role:"Optic",spareable:true,
       qty:Math.ceil(mgf.twinHost/mlo.per), math:`${mgf.downG.toLocaleString()}G host bandwidth ÷ 800G per twin-port cage${mlo.per>1?` ÷ ${mlo.per} per 1.6T port`:""}`,cites:mCites,status:mSt,needs:mxmVal?null:mxm.needs}));
-    if(ew.spine>0) sideOptics(mgf.links800, mgf.links800, " — leaf↔spine (mixed groups)", `${mgf.links800.toLocaleString()} × 800G links × 2 ends (1:1)`);
+    if(ew.spine>0) sideOptics(mgf.links800, mgf.links800, " — leaf↔spine (mixed groups)", `${mgf.links800.toLocaleString()} × 800G links × 2 ends (${ovrT} at the leaf)`);
     lines.push(V.line({fabric:"fiber",sku:`${C.fiber.straight.sku}-${reach}`,desc:C.fiber.straight.label+" — leaf↔spine (E-W, mixed groups)",role:"Fiber trunk",spareable:true,
       qty:ew.cSS, math:`${mgf.links800.toLocaleString()} × 800G links × 2 MPO-12 per twin-port`,cites:C.fiber.straight.cites,status:"VERIFIED"}));
   } else if(xdrRA){
@@ -2036,7 +2101,7 @@ function buildBOM(input){
       status:ewSwitch.aiDesign?"VALIDATED":"VERIFIED",cites:ew.rtx?["RTXPRO","SN5K"]:ewSwitch.cites,eol:!!ewSwitch.eol}));
     if(ew.spine>0) spineLines(ew.spine, ew.stripe?ew.stripe.spineDown*((ew.stripe.unitG||800)/800):(ew.fold?ew.fold.podInfo[0].down+ew.fold.podInfo[0].up:ewRS),
       ew.des?" (DES)":(ew.tier===3?` — pod spine (${ew.fold.podInfo[0].down} cages down to pod leaves, ${ew.fold.podInfo[0].up} up to core)`:(ew.regime==="sg"?` — E-W spine (rail-aligned spine groups)`:` — E-W spine`)),
-      (ew.spineBasis||`${ew.upCages.toLocaleString()} uplink 800G cages ÷ ${ewRS}/switch (1:1), min 2/plane`),
+      (ew.spineBasis||`${ew.upCages.toLocaleString()} uplink 800G cages ÷ ${ewRS}/switch (${ovrT} at the leaf), min 2/plane`),
       (ew.tier===3||ew.regime==="sg")?"VERIFIED":(ewSpine.aiDesign&&ewSpine===ewSwitch?"VALIDATED":"VERIFIED"),ew.regime==="sg"?[...ewSpine.cites,"SPOD"]:ewSpine.cites);
     if(ew.sspine>0) spineLines(ew.sspine, ew.fold?ew.fold.coreDown:ewRS, ` — E-W core / super-spine (${ew.coreGroups} core groups; tier named by the RA for the largest designs)`,
       `${ew.coreGroups} core groups × ${ew.coreGroupSize} switches${ew.planes>1?`/plane × ${ew.planes} planes`:""} — every pod sends ${ew.fold?ew.fold.podInfo[0].perCore:ew.coreStripe} link(s) to each core switch; ${ew.fold?ew.fold.coreDown:"?"}/${ew.fold?ew.fold.R:64} core ports used`,
@@ -2182,7 +2247,7 @@ function buildBOM(input){
     status:(nsn.validated&&!ns.nicAdjusted)?"VALIDATED":(nsn.validated?"VERIFIED":"UNVALIDATED"),needs:nsn.needs,cites:[...(nsn.cites||[]),...feCite(input.nsnic)]}));
   if(input.dmode==="custom" && input.nscountmode==="manual" && (+input.nsleafn>0)){
     const L=Math.floor(+input.nsleafn), S=Math.max(0,Math.floor(+input.nsspinen||0)), a0={leaf:ns.leaf,spine:ns.spine,merged:ns.merged};
-    const nfl=[], nhard=[], fl={push:f=>nfl.push(f)}, hf=f=>{ nfl.push(f); nhard.push(f.text); };
+    const nfl=[], nhard=[], nhardD=[], fl={push:f=>nfl.push(f)}, hf=f=>{ nfl.push(f); nhard.push(f.text); nhardD.push(`${f.text} — ${f.needs}`); };
     fl.push(V.flag(`Manual N-S switch counts: ${L} leaf + ${S} spine`,`user-set counts replace the ${a0.merged?"RA consolidation into the compute switches":`${a0.leaf} leaf + ${a0.spine} spine sizing`} — checks applied below; lines are DATASHEET-VERIFIED`));
     if(a0.merged) fl.push(V.flag("N-S made dedicated by manual counts","the RA consolidates N-S into the compute switches at this scale — dedicated N-S leaves are an RA deviation"));
     if(L%2) fl.push(V.flag(`Odd N-S leaf count (${L})`,"N-S leaves are deployed in pairs for dual-homed node attach (RA)"));
@@ -2208,6 +2273,9 @@ function buildBOM(input){
       /* 1:1 / port capacity is a HARD rule — reject, keep the engine sizing, never price an oversubscribed N-S */
       const also=nfl.slice(1).map(f=>f.text).filter(t=>!nhard.includes(t));
       ns.manualRejected={L,S,reasons:nhard.slice(),also,ratio};
+      conflicts.push({id:"nscount",title:`N-S switch counts ${L} leaf + ${S} spine can't carry every allocated port 1:1`,reasons:nhardD.slice(),also,
+        alt:a0.merged?"N-S merged into the compute switches (RA consolidation at this scale)":`${a0.leaf} leaf + ${a0.spine} spine${ns.sspine?` + ${ns.sspine} core`:""} — the engine's N-S sizing`,
+        patch:a0.merged?{nscountmode:"auto"}:{nsleafn:a0.leaf,nsspinen:a0.spine+(ns.sspine||0)},L,S});
       flags.push(V.flag(`Manual N-S counts ${L} leaf + ${S} spine REJECTED — cannot carry every allocated port 1:1`,`${nhard.join("; ")}. The BOM uses the engine sizing instead: ${a0.merged?"merged into the compute switches (RA)":`${a0.leaf} leaf + ${a0.spine} spine`}. Enter at least these counts (or switch Switch count to Auto)${also.length?`. Also: ${also.join("; ")}`:""}`));
     } else {
     flags.push(...nfl);
@@ -2405,7 +2473,8 @@ function buildBOM(input){
   if(lines.some(l=>l.sku===C.optics.twin800flt.sku))
     flags.push(V.flag("MMA4Z00-NS-FLT on ConnectX-8 — NVIDIA firmware known issue",
       "the CX-8 Firmware Release Notes (v40.50.1002, Oct 29 2025) footnote this module: 'Starting with firmware version xx.48.10xx, the twin-port transceiver MMA4Z00-NS-FLT may not function properly and can cause link-up failures' (Known Issue 4835832; fix status not stated) — confirm the target CX-8 firmware and KI 4835832 resolution with NVIDIA before ordering"));
-  const bom = {input,ew,ns,st,oob,inc,mixed,g2:mixed?g2:null,totalNodes:totalN,totalGpus:tGpus,lines,flags,notes,headroom:hr,server:srv||null,
+  if(ovr>1&&ew&&!ew.ratioNA) lines.forEach(l=>{ if(l.fabric==="ew"&&["Leaf","Spine","Super-spine"].includes(l.role)&&l.status==="VALIDATED") l.status="VERIFIED"; });
+  const bom = {conflicts,ratio:ew&&!ew.ratioNA?ovr:1,input,ew,ns,st,oob,inc,mixed,g2:mixed?g2:null,totalNodes:totalN,totalGpus:tGpus,lines,flags,notes,headroom:hr,server:srv||null,
     ewSwitch,nsSwitch,oobSwitch,ewSpine,
     ewLeafName:(ew&&ew.des)?ewSwitch.des.leafId:(ewSwitch&&ewSwitch.id),
     ewSpineName:(ew&&ew.des)?ewSwitch.des.spineId:(spineHW||(ewSpine&&ewSpine.id)),
@@ -2462,8 +2531,8 @@ const Exporter = {
     if(inc2.ew) out.push(bom.mixed
       ?`E-W (Ethernet, mixed host groups): rail-aligned shared 2-tier fabric — ${bom.ew.mg.downG.toLocaleString()}G host bandwidth (${bom.ew.mg.ports1.toLocaleString()}×${bom.ew.mg.s1}G + ${bom.ew.mg.ports2.toLocaleString()}×${bom.ew.mg.s2}G) ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${bom.ewSwitch.sku}) — UNVALIDATED (no NVIDIA RA covers heterogeneous compute fabrics)`
       :`E-W (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}): rail-optimized, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine (UNVALIDATED sizing)`:""} (${bom.ewSwitch.sku}); ${bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap}`);
-    if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s = uplink ${p.upG.toLocaleString()} Gb/s (1:1); cages ${p.cagesUsed}/${p.cagesAvail}`);
-    if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s ≤ uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (1:1 non-blocking)`);
+    if(inc2.ew&&!bom.mixed) out.push(`Oversubscription proof (per leaf, fullest block): downlink ${p.downG.toLocaleString()} Gb/s ${(bom.ratio||1)>1?"→":"="} uplink ${p.upG.toLocaleString()} Gb/s (${ovsTxt(bom)}); cages ${p.cagesUsed}/${p.cagesAvail}`);
+    if(inc2.ew&&bom.mixed) out.push(`Oversubscription proof (fabric total): downlink ${bom.ew.mg.downG.toLocaleString()} Gb/s → uplink ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (${ovsTxt(bom)})`);
     if(inc2.ns) out.push(`N-S (converged, per RA): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""}${bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()} core`:""} (${bom.nsSwitch.sku}); node attach ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" redundant":" single-homed (flagged)"}`);
     if(inc2.ew) out.push(`Transport: ${bom.ew.proto==="ib"?(bom.ew.xdr?CATALOG.rules.transportXDR:CATALOG.rules.transportIB):CATALOG.rules.transport}`);
     if(inc2.oob) out.push(bom.mixed
@@ -2661,6 +2730,7 @@ const Exporter = {
     const ra = state.dmode==="ra";
     { const srv0=CATALOG.servers.find(x=>x.id===$("server").value); $("ewnicn").value=(ra&&srv0&&srv0.ewNicN)||defaultNicCount(); }
     $("dmode-help").textContent = ra ? "" : "Custom mode — off-RA selections stay available and are validated end to end, with deviations flagged.";
+    if(ra) $("oversub").value="1"; $("oversub").disabled=ra; oversubHelp();
     ["ewoem","nsoem","stoem","ooboem"].forEach(id=>{ if(ra) $(id).value="NVIDIA"; $(id).disabled=ra; });
     ["ewswmode","nsswmode","stswmode","oobswmode"].forEach(id=>{ if(ra) setSeg(id,"auto"); [...$(id).children].forEach(b=>{ if(b.dataset.v==="manual") b.disabled=ra; }); });
     if(ra){ setSeg("nsmode","ra"); setSeg("stmode","converged"); setSeg("oobspeed","1g"); }
@@ -2710,7 +2780,7 @@ const Exporter = {
     const nodes=+$("nodes").value, gph=+$("gph").value, ewnicn=+$("ewnicn").value, client=$("client").value.trim();
     const g2on = state.dmode==="custom" && $("g2on").checked;
     return {
-      client, descr:$("descr").value.trim(), dmode:state.dmode,
+      client, descr:$("descr").value.trim(), dmode:state.dmode, oversub:state.dmode==="custom"?(+$("oversub").value||1):1,
       g2on, g2svroem:$("g2svroem").value, g2server:$("g2server").value, g2gpu:$("g2gpu").value, g2gph:+$("g2gph").value||8,
       g2nodes:+$("g2nodes").value||0, g2ewnic:$("g2ewnic").value, g2ewnicn:+$("g2ewnicn").value||1, g2nsnic:$("g2nsnic").value, g2nsnicn:+$("g2nsnicn").value||1,
       incEw:$("inc-ew").checked, incNs:$("inc-ns").checked, incSt:$("inc-st").checked, incOob:$("inc-oob").checked,
@@ -2773,7 +2843,7 @@ const Exporter = {
       else if(f==="ew") h.textContent=man?`Engine sizing: ${a.ew.leaf} leaf + ${a.ew.spine} spine${a.ew.sspine?` (incl. ${a.ew.sspine} core)`:""}${a.ew.planes>1?` over ${a.ew.planes} planes`:""}. Your totals are rebuilt into links/optics and checked: host ports, 1:1, even counts, plane split, rail alignment, radix.`:`Auto: ${a.ew.leaf} leaf + ${a.ew.spine} spine (engine sizing).`;
       else h.textContent=man?`Engine sizing: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`}. Your totals are checked for port capacity, pairs, 1:1 and radix.`:`Auto: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine${a.ns.sspine?` (incl. ${a.ns.sspine} core)`:""}`}.`;
       h.classList.toggle("cnt-bad",!!(man&&mc[f]));
-      if(a&&man&&mc[f]) h.textContent=`⚠ ${mc[f].L} leaf + ${mc[f].S} spine cannot be 1:1 non-blocking (${mc[f].reasons.join("; ")}) — REJECTED: the BOM uses the engine sizing ${f==="ew"?`${a.ew.leaf} leaf + ${a.ew.spine} spine`:(a.ns.merged?"(merged into the compute switches)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`)}. Enter at least those counts or switch to Auto.`;
+      if(a&&man&&mc[f]) h.textContent=`⚠ ${mc[f].L} leaf + ${mc[f].S} spine cannot be ${f==="ew"&&(mc[f].target||1)>1?`built at ${mc[f].target}:1`:"1:1 non-blocking"} (${mc[f].reasons.join("; ")}) — Generate will ask before using the engine sizing ${f==="ew"?`${a.ew.leaf} leaf + ${a.ew.spine} spine`:(a.ns.merged?"(merged into the compute switches)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`)}. Enter at least those counts or switch to Auto.`;
     }
   }
   seg("ewcountmode",v=>syncCounts(v==="manual"?"ew":null)); seg("nscountmode",v=>syncCounts(v==="manual"?"ns":null));
@@ -3059,7 +3129,7 @@ const Exporter = {
     if(isIB) D+=`<circle cx="${ufm.cx}" cy="${ufm.y}" r="3.4" fill="var(--rail3)"/><circle cx="${ufm.cx}" cy="${ufm.y+ufm.h}" r="3.4" fill="var(--rail3)"/>`;
     return `<svg viewBox="0 0 ${W} ${H+14}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="Unified fabric topology: East-West${dual?" (planes A and B)":""}, North-South, storage, and OOB with first and last devices per tier and bundled single-point link terminations">
       ${L}${B}${D}
-      <text x="${W/2}" y="${H-18}" text-anchor="middle" fill="var(--muted)" font-size="10">⋯ = omitted units (last index shown) · links bundled at one point per device · 1:1 non-blocking E-W · OOB dotted</text>
+      <text x="${W/2}" y="${H-18}" text-anchor="middle" fill="var(--muted)" font-size="10">⋯ = omitted units (last index shown) · links bundled at one point per device · ${ovsTxt(bom)} E-W · OOB dotted</text>
       <text x="${W/2}" y="${H-4}" text-anchor="middle" fill="var(--muted)" font-size="10">GPU-N of every host lands on the same rail/leaf${dual?" · every host connects to BOTH planes":""}${isIB?" · UFM per SuperPOD H100 RA":""}</text></svg>`;
   }
 
@@ -3304,7 +3374,7 @@ const Exporter = {
         +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${cols[1].col}" stroke-width="1.3" opacity="0.8"/>`;});
     s+=r.svg;
     return Dsvg(suY+76,"E-W dual-plane fabric overview",s,
-      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: ${DrailsSpan(b)} into plane A + the same into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · 1:1 per plane${isIB?" · NDR IB":""}`,
+      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: ${DrailsSpan(b)} into plane A + the same into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · ${ovsTxt(b,1)} per plane${isIB?" · NDR IB":""}`,
       `two independent planes, NO plane↔plane links — every SU attaches to both · per plane: ${lpp.toLocaleString()} leaf + ${spp.toLocaleString()} spine${t3?` + ${sspp.toLocaleString()} core`:""}${isIB?" · subnet manager per plane":""}`);
   }
   function ewOv(b){
@@ -3325,7 +3395,7 @@ const Exporter = {
       } else {
         s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${swS}`,ew.spine/ew.planes,"spine","spine2t","var(--muted)",
           isIB?(ew.xdr?(ew.published?`SuperPOD B300 XDR row (${ew.blocks} SU)`:"even-striped, between XDR rows"):ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
-              :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${Math.ceil(ew.blocks/4)}`:ew.des?`DES fabric · every leaf → every spine (${ew.ssLinkG}G each)`:"flat 2-tier · 1:1")).svg;
+              :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${ew.sg?ew.sg.size:Math.ceil(ew.blocks/4)}`:ew.des?`DES fabric · every leaf → every spine (${ew.ssLinkG}G each)`:`flat 2-tier · ${ovsTxt(b,1)}`)).svg;
       }
       y+=66; s+=Dtrunk(y,y+26,`${(ew.links800??ew.links400).toLocaleString()}×${ew.ssLinkG}G leaf↔spine`); y+=26;
     }
@@ -3344,7 +3414,7 @@ const Exporter = {
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--rail1)")+r.svg;
     const ri=DrailsInfo(b);
     return Dsvg(suY+76,"E-W fabric overview",s,
-      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · ${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports (${ri.txt}${ew.planes===2?", per plane":""}) · 1:1 non-blocking at every tier${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):""}`,
+      `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · ${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports (${ri.txt}${ew.planes===2?", per plane":""}) · ${(b.ratio||1)>1?`${b.ratio}:1 oversubscribed at the leaf, 1:1 above`:"1:1 non-blocking at every tier"}${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):""}`,
       isIB?`SU boxes are GPU hosts · every outlined block expands · ${b.ew.xdr?"UFM 3.5 appliances on Q3400 FNM ports (Quantum-X800 SuperPOD RA)":`SM: ${b.input.nodes>2000?"UFM on externally managed QM9790 (>2,000 nodes)":"QM9700 onboard (≤2,000 nodes)"} — UFM attaches to the fabric per RA`}`
           :"SU boxes are GPU hosts (endpoints); switches live in the tiers above — every outlined block expands");
   }
@@ -4026,7 +4096,7 @@ const Exporter = {
     y+=46;
     return Dsvg(y+40,"Generalized E-W tier design",s,
       dual?"per-plane design: PLANE A and PLANE B are identical, independent fabrics — no plane-to-plane links; every host attaches to both planes":(ri.railOpt?`rail-optimized: GPU k of every host lands on the leaf serving rail k`:`not rail-optimized (${b.input.ewnicn} NICs for ${b.input.gph} GPUs): host ports spread evenly over the leaves`),
-      `1:1 non-blocking at every tier${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):" · RoCEv2 lossless Ethernet"}`);
+      `${(b.ratio||1)>1?`${b.ratio}:1 oversubscribed at the leaf, 1:1 above`:"1:1 non-blocking at every tier"}${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):" · RoCEv2 lossless Ethernet"}`);
   }
   /* ---- MIXED-GROUP in-app overviews (Storage / OOB) and detail views ---- */
   const mG=(b,gi)=>{ const i=b.input, g2=b.g2;
@@ -4073,13 +4143,13 @@ const Exporter = {
     s+=Dwires(W);
     return Dsvg(lY+46+58,`Spine ${i} — leaf↔spine spread (mixed)`,s,
       `spine ${i} takes ${lay.stripe.kMin===lay.stripe.kMax?lay.stripe.kMax:`${lay.stripe.kMin}–${lay.stripe.kMax}`} uplink(s) from EVERY shared leaf — identical role across all ${S} spines · ${lay.stripe.spineDown}/${lay.RS||64} spine ports used`,
-      `even striping: every leaf sends the same whole number of uplinks to each spine; each leaf 1:1 (up ≥ down) · ${lay.L} leaves ≤ 64`);
+      `even striping: every leaf sends the same whole number of uplinks to each spine; each leaf ${(lay.ratio||1)>1?`≤ ${lay.ratio}:1 (up ≥ down ÷ ${lay.ratio})`:"1:1 (up ≥ down)"} · ${lay.L} leaves ≤ 64`);
   }
   function mLeafSVG(b,i){
     const lay=mLay(b); if(!lay) return mNoLay(b,"Mixed shared-leaf detail");
     i=Math.max(1,Math.min(i||1,lay.L)); const lf=lay.leaves[i-1], S=lay.stripe?lay.stripe.S:0;
     if(!lf.units.length) return Dsvg(150,`Shared leaf ${i} — spare`,`<text x="450" y="50" text-anchor="middle" fill="var(--fg)" font-weight="700">Shared leaf ${i} of ${lay.L} — no rail homed here (spare)</text><text x="450" y="70" text-anchor="middle" fill="var(--muted)" font-size="10">rails are GPUs: every rail k already sits on its rail-home leaf · ${lf.up} uplink cage(s) reserved for growth</text>`,`leaf ${i}: 0 host cages · spare capacity (flagged)`);
-    const ratio=lf.up>=lf.down?"1:1":lf.up?`${(lf.down/lf.up).toFixed(2)}:1 OVERSUBSCRIBED`:"no uplinks";
+    const rT=(b.ratio||1), ratio=lf.up>=lf.down?"1:1":lf.up?(lf.down/lf.up<=rT+1e-9?`${(lf.down/lf.up).toFixed(2)}:1 (≤ ${rT}:1 by design)`:`${(lf.down/lf.up).toFixed(2)}:1 OVERSUBSCRIBED`):"no uplinks";
     const sp=Dpick(S), sX=sp.length===3?[230,450,670]:sp.map((_,k)=>450+(k-(sp.length-1)/2)*220), sY=30, lY=170, bY=330;
     const blocks=mBlocksOn(lf), shown=blocks.length<=4?blocks:[...blocks.slice(0,3),{more:blocks.length-3}];
     const bW=Daw(shown.length,200,20), bX=Dxs(shown.length,bW,20);
@@ -4196,7 +4266,7 @@ const Exporter = {
     const m=b.ew.mg, i=b.input, gl1=(CATALOG.gpus.find(g=>g.id===i.gpu)||{}).label||i.gpu, gl2=(CATALOG.gpus.find(g=>g.id===i.g2gpu)||{}).label||i.g2gpu;
     const K=k=>live?k:null;
     let s="", y=16;
-    const sp=Dtier(450,560,y,`Spine tier — ${b.ew.spine.toLocaleString()}× ${b.ewSpineName||b.ewSwitch.id}`,b.ew.spine,"Spine",K("mspine"),"var(--muted)",`${m.links800.toLocaleString()}×800G · 1:1`);
+    const sp=Dtier(450,560,y,`Spine tier — ${b.ew.spine.toLocaleString()}× ${b.ewSpineName||b.ewSwitch.id}`,b.ew.spine,"Spine",K("mspine"),"var(--muted)",`${m.links800.toLocaleString()}×800G · ${ovsTxt(b,1)}`);
     s+=sp.svg; y+=sp.h;
     s+=Dtrunk(y,y+24,`${m.links800.toLocaleString()}×800G leaf↔spine`); y+=24;
     const layO=mLay(b), lfSub=layO?(li=>{ const us=(layO.leaves[li-1]||{units:[]}).units, ro=us.filter(u=>u.railOpt!==false), nr=us.filter(u=>u.railOpt===false);
@@ -4214,7 +4284,7 @@ const Exporter = {
     y=suY+44;
     y+=10;
     return Dsvg(y+40,"Mixed-group shared E-W fabric",s,
-      "two host groups share one E-W fabric — rail k (GPU k) of every host → the same leaf · 1:1 · single plane · Ethernet",
+      `two host groups share one E-W fabric — rail k (GPU k) of every host → the same leaf · ${ovsTxt(b,1)} · single plane · Ethernet`,
       "no published NVIDIA RA covers mixed GPU fabrics — flagged; NVIDIA-reviewed design required before build");
   }
   function genMixedNsOv(b,live){ return nsOvAll(b,live); }
@@ -4484,7 +4554,7 @@ const Exporter = {
       L+=`<line x1="${suCx(i)}" y1="${suY(i)+suH}" x2="${nsB.x+nsB.w/2}" y2="${nsB.y}" stroke="var(--ok)" stroke-width="1.2" opacity="0.8"/>`;
       L+=`<line x1="${suCx(i)}" y1="${suY(i)+suH}" x2="${oobB.x+oobB.w/2}" y2="${oobB.y}" stroke="var(--muted)" stroke-width="1.1" stroke-dasharray="3 4"/>`;
     }
-    B+=box(spB,"var(--muted)")+`<text x="${W/2}" y="${spB.y+18}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="${bom.ew.sspine?10.5:11}">${bom.ew.spine>0?`E-W spine — ${bom.ew.spine.toLocaleString()}× ${bom.ewSwitch.id}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} core (${bom.ew.coreGroups} groups)`:""}`:`E-W collapsed leaf pair — ISL interconnected (RTX PRO RA)`}</text><text x="${W/2}" y="${spB.y+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.ssLinkG}G ${bom.ew.proto==="ib"?"NDR IB":""} ${bom.ew.tier===3?"3-tier folded Clos":"fat tree"} · ${bom.ew.manual?`MANUAL counts · ${bom.ew.manualRatio}`:"1:1 non-blocking"}${bom.ew.planes===2?" · 2 planes (A/B)":""}</text>`;
+    B+=box(spB,"var(--muted)")+`<text x="${W/2}" y="${spB.y+18}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="${bom.ew.sspine?10.5:11}">${bom.ew.spine>0?`E-W spine — ${bom.ew.spine.toLocaleString()}× ${bom.ewSwitch.id}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} core (${bom.ew.coreGroups} groups)`:""}`:`E-W collapsed leaf pair — ISL interconnected (RTX PRO RA)`}</text><text x="${W/2}" y="${spB.y+33}" text-anchor="middle" fill="var(--muted)" font-size="10">${bom.ew.ssLinkG}G ${bom.ew.proto==="ib"?"NDR IB":""} ${bom.ew.tier===3?"3-tier folded Clos":"fat tree"} · ${bom.ew.manual?`MANUAL counts · ${bom.ew.manualRatio}`:ovsTxt(bom)}${bom.ew.planes===2?" · 2 planes (A/B)":""}</text>`;
     for(let k=0;k<totalBlockBoxes;k++){const x=bx0+k*(bw+24);
       if(bkIsEll(k)){B+=`<line x1="${bCx(k)-26}" y1="${by+bh/2}" x2="${bCx(k)+26}" y2="${by+bh/2}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`;continue;}
       const blkNo = bkIsLast(k)? blocks : k+1;
@@ -4581,7 +4651,7 @@ DESIGN
 Client: ${i.client||"—"}; ${bom.mixed?`MIXED HOST GROUPS on shared fabrics (no OEM RA covers this — audit extra carefully): group 1 = ${i.nodes} hosts × ${i.gph} GPUs, group 2 = ${bom.g2.nodes} hosts × ${bom.g2.gph}× ${bom.g2.gpu.label}; ${bom.totalGpus} GPUs total, single-plane shared E-W`:`${i.nodes} GPU hosts × ${i.gph} GPUs (${i.nodes*i.gph} GPUs), ${bom.ew.planes===2?"dual-plane":"single-plane"} E-W`}, protocol ${i.ewproto==="ib"?(bom.ew.xdr?"XDR InfiniBand (Quantum-X800 SuperPOD RA)":"NDR InfiniBand"):"RoCEv2 Ethernet"}.
 Server platform${bom.mixed?" (group 1)":""}: ${(CATALOG.servers.find(s=>s.id===i.server)||{}).label||"generic"}.${bom.mixed?`
 Server platform (group 2): ${bom.g2.srv?bom.g2.srv.label:"generic host"} — ${bom.g2.ewnicn}× ${nic(bom.g2.ewn.id)} E-W + ${bom.g2.nsnicn}× ${nic(bom.g2.nsn.id)} N-S per host.`:""}
-${bom.inc.ew?`E-W NIC${bom.mixed?" (group 1)":""}: ${i.ewnicn}× ${nic(i.ewnic)} per host. E-W switch: ${sw(bom.ewSwitch)} — ${bom.ew.leaf} leaf + ${bom.ew.spine} spine${bom.ew.sspine?` + ${bom.ew.sspine} core`:""}${bom.mixed?` shared by both host groups (generic 1:1 Clos, ${bom.ew.mg.downG.toLocaleString()}G ⇒ ${bom.ew.mg.links800}×800G uplinks)`:""}.`:"E-W fabric: EXCLUDED from this design by the user — do not audit it."}
+${bom.inc.ew?`E-W NIC${bom.mixed?" (group 1)":""}: ${i.ewnicn}× ${nic(i.ewnic)} per host. E-W switch: ${sw(bom.ewSwitch)} — ${bom.ew.leaf} leaf + ${bom.ew.spine} spine${bom.ew.sspine?` + ${bom.ew.sspine} core`:""}${bom.mixed?` shared by both host groups (generic ${ovsTxt(bom,1)} Clos, ${bom.ew.mg.downG.toLocaleString()}G ⇒ ${bom.ew.mg.links800}×800G uplinks)`:""}.`:"E-W fabric: EXCLUDED from this design by the user — do not audit it."}
 ${bom.inc.ns?`N-S NIC${bom.mixed?" (group 1)":""}: ${i.nsnicn}× ${nic(i.nsnic)} per host. N-S switch: ${sw(bom.nsSwitch)} — ${bom.ns.merged?"merged into E-W":bom.ns.leaf+" leaf"+(bom.ns.spine?` + ${bom.ns.spine} spine`:"")}.`:"N-S fabric: EXCLUDED — do not audit it."}
 ${bom.inc.st?`Storage: ${i.stmode}.`:"Storage: EXCLUDED."} ${bom.inc.oob?`OOB: ${bom.oob.switches}× SN2201.`:"OOB: EXCLUDED."}
 OPTICS & CABLES AS QUOTED
@@ -4627,7 +4697,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
       ${unCount?`<div class="vbanner flagged"><span class="mark">⚠</span><span>${unCount} item${unCount>1?"s":""} need${unCount>1?"":"s"} further OEM evidence — nothing is guessed. <a href="#" id="goto-dt">Open Details &amp; evidence</a> for what's missing.</span></div>`
                :`<div class="vbanner good"><span class="mark">✓</span><span>Every line validated against official OEM documentation — no open flags.</span></div>`}
 
-      <div class="card"><header><h2>Design at a glance</h2><span class="note" style="margin-left:auto">${bom.inc.ew?`${bom.ew.planes===2?"dual-plane (A/B)":"single-plane"} · ${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand":"NDR InfiniBand"):"RoCEv2 Ethernet"} · `:""}1:1 non-blocking</span></header><div class="body">
+      <div class="card"><header><h2>Design at a glance</h2><span class="note" style="margin-left:auto">${bom.inc.ew?`${bom.ew.planes===2?"dual-plane (A/B)":"single-plane"} · ${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand":"NDR InfiniBand"):"RoCEv2 Ethernet"} · `:""}${ovsTxt(bom)}</span></header><div class="body">
         <div class="fabgrid">
           ${bom.inc.ew?`<div class="fabcard"><div class="fh">Compute E-W ${stIcon(fst.ew)}</div>
             <div class="big">${bom.ew.leaf.toLocaleString()} + ${bom.ew.spine.toLocaleString()}${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()}`:""} <small>leaf + spine${bom.ew.sspine?" + core":""}</small></div>
@@ -4695,11 +4765,11 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
       </div>
 
       <div class="card"><header><h2>Design summary &amp; oversubscription proof</h2></header><div class="body">
-        ${bom.inc.ew&&bom.mixed?`<div class="note"><b>E-W topology (Ethernet — mixed host groups):</b> rail-aligned shared 2-tier fabric (app-defined layout), 1:1 non-blocking, single plane: ${bom.ew.mg.downG.toLocaleString()}G total host bandwidth ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${esc(bom.ewSwitch.label)}). No NVIDIA RA covers heterogeneous compute fabrics — flagged UNVALIDATED.</div>
+        ${bom.inc.ew&&bom.mixed?`<div class="note"><b>E-W topology (Ethernet — mixed host groups):</b> rail-aligned shared 2-tier fabric (app-defined layout), ${ovsTxt(bom)}, single plane: ${bom.ew.mg.downG.toLocaleString()}G total host bandwidth ⇒ ${bom.ew.mg.links800.toLocaleString()}×800G uplinks; ${bom.ew.leaf.toLocaleString()} shared leaf + ${bom.ew.spine.toLocaleString()} spine (${esc(bom.ewSwitch.label)}). No NVIDIA RA covers heterogeneous compute fabrics — flagged UNVALIDATED.</div>
         <div class="proof">Mixed E-W (shared Clos):
   group 1 = ${i.nodes.toLocaleString()} hosts ⇒ ${bom.ew.mg.ports1.toLocaleString()} ports @ ${bom.ew.mg.s1}G
   group 2 = ${bom.g2.nodes.toLocaleString()} hosts ⇒ ${bom.ew.mg.ports2.toLocaleString()} ports @ ${bom.ew.mg.s2}G
-  downlink = ${bom.ew.mg.downG.toLocaleString()} Gb/s ⇒ uplink ${bom.ew.mg.links800.toLocaleString()} × 800G = ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (≥ 1:1)
+  downlink = ${bom.ew.mg.downG.toLocaleString()} Gb/s ⇒ uplink ${bom.ew.mg.links800.toLocaleString()} × 800G = ${(bom.ew.mg.links800*800).toLocaleString()} Gb/s (${(bom.ratio||1)>1?`≤ ${bom.ratio}:1`:"≥ 1:1"})
   leaf = ${bom.ew.leaf} shared · spine = ${bom.ew.spine}</div>`:""}
         ${bom.inc.ew&&!bom.mixed?`<div class="note"><b>E-W topology (${bom.ew.proto==="ib"?(bom.ew.xdr?"XDR InfiniBand, Quantum-X800":"NDR InfiniBand"):"Ethernet"}):</b> rail-optimized leaf-spine${bom.ew.sspine?" + super-spine":""}, ${i.gph} rails/host @ ${bom.ew.railSpeed}G, ${bom.ew.planes} plane(s). ${esc(bom.ew.proto==="ib"?CATALOG.rules.railMapIB:CATALOG.rules.railMap)}. Blocks of ${bom.ew.nodesPerBlock} nodes; ${bom.ew.leaf.toLocaleString()} leaf + ${bom.ew.spine.toLocaleString()} spine${bom.ew.sspine?` + ${bom.ew.sspine.toLocaleString()} super-spine`:""} (${esc(bom.ewSwitch.label)}).</div>
         <div class="proof">E-W per leaf (fullest block, ${p.nodesInBlock} nodes):
@@ -4708,7 +4778,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
   ratio    = ${p.ratio} (non-blocking)   cages used ${p.cagesUsed}/${p.cagesAvail} per leaf (${p.cagesAvail}-port switch)
 ${bom.ew.tier===3?`Fabric links: ${(bom.ew.links800??bom.ew.links400).toLocaleString()} leaf↔spine + ${bom.ew.linksSC.toLocaleString()} spine↔core ${bom.ew.ssLinkG}G links · ${bom.ew.spine.toLocaleString()} pod spines + ${bom.ew.sspine.toLocaleString()} core switches
 Radix check: ${bom.ew.proof.tiers||""}
-Topology: ${bom.ew.spineBasis}`:`E-W spine: ${bom.ew.linksSS.toLocaleString()} × ${bom.ew.ssLinkG}G leaf↔spine links across ${bom.ew.spine.toLocaleString()} spines (1:1)${bom.ew.spineBasis?` — ${bom.ew.spineBasis}`:""}`}
+Topology: ${bom.ew.spineBasis}`:`E-W spine: ${bom.ew.linksSS.toLocaleString()} × ${bom.ew.ssLinkG}G leaf↔spine links across ${bom.ew.spine.toLocaleString()} spines (${ovsTxt(bom,1)} at the leaf)${bom.ew.spineBasis?` — ${bom.ew.spineBasis}`:""}`}
 N-S (converged): ${bom.ns.leaf.toLocaleString()} leaf${bom.ns.spine?` + ${bom.ns.spine.toLocaleString()} spine`:""}${bom.ns.sspine?` + ${bom.ns.sspine.toLocaleString()} core`:""} — ${esc(bom.ns.basis)}
   node attach: ${i.nodes.toLocaleString()} × ${bom.ns.nsPortsPerNode||2}×${bom.ns.nsSpeedG||200}GbE${(bom.ns.nsPortsPerNode||2)>=2?" to two switches (redundant)":" single-homed (flagged)"}; storage ${bom.ns.pStor.toLocaleString()}×800G, customer ${bom.ns.pCust.toLocaleString()}×800G, support ${bom.ns.pSupp}×800G, ISL ${bom.ns.pISL.toLocaleString()} port-ends${bom.future?`
 At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.leaf.toLocaleString()} leaf + ${bom.future.ew.spine.toLocaleString()} spine${bom.future.ew.sspine?` + ${bom.future.ew.sspine} super-spine`:""} · N-S ${bom.future.ns.leaf.toLocaleString()} leaf${bom.future.ns.spine?` + ${bom.future.ns.spine} spine`:""} · OOB ${bom.future.oob.switches.toLocaleString()}× SN2201 (per-line quantities in the '@ ${bom.future.nodes.toLocaleString()} hosts' column)`:""}</div>`:""}
@@ -4835,6 +4905,66 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     $("results").scrollIntoView({behavior:"smooth",block:"start"});
   }
 
+  function oversubHelp(){
+    const r=+$("oversub").value||1, h=$("oversub-help"); if(!h) return;
+    if(state.dmode==="ra"){ h.textContent="RA validated designs are 1:1 non-blocking — choose Custom to oversubscribe the E-W leaves."; h.classList.remove("cnt-bad"); return; }
+    if(r===1){ h.textContent="Non-blocking: every leaf has as much uplink as host-facing bandwidth (NVIDIA RA requirement for GPU fabrics)."; h.classList.remove("cnt-bad"); return; }
+    const sp=Engine.leafSplit(64,r);
+    h.textContent=`Each leaf carries up to ${r}× more host bandwidth than uplink (64-port leaf: ≤${sp.D} host-facing + ${sp.U} uplink ports). Spines and cores stay 1:1. The NVIDIA RAs specify 1:1 for GPU fabrics — flagged as a deviation.`;
+    h.classList.add("cnt-bad"); }
+  $("oversub").addEventListener("change",oversubHelp);
+
+  /* ---------- CAN'T-BUILD-AS-SPECIFIED dialog: the engine reports every spec it could not honor (bom.conflicts:
+     reason + best alternative). Nothing is substituted silently — the user proceeds with the alternative,
+     picks another offered option, or goes back to edit. ---------- */
+  function applyPatch(p){
+    for(const [k,v] of Object.entries(p||{})){
+      if(k==="oversub") $("oversub").value=String(v);
+      else if(k==="ewcountmode"||k==="nscountmode") setSeg(k,v);
+      else if($(k)) $(k).value=String(v);
+    }
+    oversubHelp();
+  }
+  function showConflicts(bom,input,onDone){
+    const old=document.querySelector(".cf-back"); if(old) old.remove();
+    const r=Engine.ovrOf(input);
+    /* extra option: the user's own manual E-W counts DO work at a higher standard ratio */
+    let keep=null; const ewc=bom.conflicts.find(c=>c.id==="ewcount");
+    if(ewc&&input.dmode==="custom") for(const x of Engine.OVERSUB.filter(x=>x>r)){
+      try{ const b2=buildBOM({...input,oversub:x}); if(!b2.conflicts.some(c=>c.id==="ewcount")){ keep={x,L:ewc.L,S:ewc.S}; break; } }catch(_){}
+    }
+    const back=document.createElement("div"); back.className="cf-back";
+    back.innerHTML=`<div class="cf" role="dialog" aria-modal="true" aria-labelledby="cf-t">
+      <div class="cf-head"><div class="cf-ic">⚠</div><div><h3 id="cf-t">This design can't be built as specified</h3>
+        <div class="note" style="margin-top:4px">Nothing has been substituted. Review the reason and the best alternative, then choose how to continue.</div></div></div>
+      <div class="cf-body">${bom.conflicts.map(c=>`<div class="cf-item"><h4>${esc(c.title)}</h4>
+        <div><b>Why:</b><ul>${c.reasons.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+        ${c.also&&c.also.length?`<div class="cf-also">Also: ${c.also.map(esc).join("; ")}</div>`:""}
+        <div class="cf-alt"><b>Best alternative:</b> ${esc(c.alt)}</div></div>`).join("")}
+        ${keep?`<div class="cf-item"><b>Or keep your counts:</b> ${keep.L} leaf + ${keep.S} spine can be built at <b>${keep.x}:1</b> oversubscription (instead of ${r}:1).</div>`:""}
+      </div>
+      <div class="cf-foot">
+        <button type="button" class="btn neutral small" data-cf="cancel">Cancel — edit the design</button>
+        ${keep?`<button type="button" class="btn neutral small" data-cf="keep">Keep ${keep.L} + ${keep.S} at ${keep.x}:1</button>`:""}
+        <button type="button" class="btn primary small" data-cf="alt">Proceed with the best alternative</button>
+      </div></div>`;
+    document.body.appendChild(back);
+    const close=()=>{ back.remove(); document.removeEventListener("keydown",esc_); };
+    const esc_=e=>{ if(e.key==="Escape") close(); }; document.addEventListener("keydown",esc_);
+    back.querySelector('[data-cf="cancel"]').onclick=close;
+    back.addEventListener("click",e=>{ if(e.target===back) close(); });
+    back.querySelector('[data-cf="alt"]').onclick=()=>{ close(); bom.conflicts.forEach(c=>applyPatch(c.patch)); onDone(); };
+    if(keep) back.querySelector('[data-cf="keep"]').onclick=()=>{ close(); applyPatch({oversub:keep.x}); onDone(); };
+    back.querySelector('[data-cf="alt"]').focus();
+  }
+  function generate(){
+    const input=collectInput();
+    try{ const bom=buildBOM(input);
+      if(bom.conflicts&&bom.conflicts.length){ showConflicts(bom,input,generate); return; }
+      render(bom); SAVED.put(input,bom); syncCounts(false); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
+    catch(err){ toast("Generation error: "+err.message); console.error(err); }
+  }
+
   $("reqform").addEventListener("submit",e=>{
     e.preventDefault();
     const fe=formError(); if(fe){ toast(fe); return; }
@@ -4847,13 +4977,11 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
         if(!Number.isInteger(S)||S<0){ toast(`${n} manual switch count: spine total must be a whole number ≥ 0.`); $(f+"spinen").focus(); return; }
       }
     }
-    const input=collectInput();
-    try{ const bom=buildBOM(input); render(bom); SAVED.put(input,bom); syncCounts(false); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
-    catch(err){ toast("Generation error: "+err.message); console.error(err); }
+    generate();
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="83";
+  const APP_BUILD="84";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
