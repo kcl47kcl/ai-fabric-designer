@@ -310,6 +310,7 @@ body.zv-open{overflow:hidden}
   .mnav button[aria-pressed=true]{color:var(--brand)}
   .mnav svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 }
+.help.cnt-bad{color:var(--warn);font-weight:600}
 </style>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
@@ -1761,9 +1762,9 @@ function buildBOM(input){
     const R = xdr?{down:72,up:72,spine:144,unit:"800G XDR port",lG:800}
             : ibN?{down:32,up:32,spine:64,unit:"400G NDR port",lG:400}
             :     {down:ewR/2,up:ewR/2,spine:ewRS,unit:"800G cage",lG:800};
-    const mflag=(t,n)=>flags.push(V.flag(t,n));
+    const mfl=[], hard=[]; const mflag=(t,n,h)=>{ mfl.push(V.flag(t,n)); if(h) hard.push(t); };
     mflag(`Manual E-W switch counts: ${L} leaf + ${S} spine`,`user-set counts replace the engine's ${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""} sizing — every design-rule check below is applied; leaf/spine lines are DATASHEET-VERIFIED, not RA-VALIDATED`);
-    if(auto.sspine) mflag("Manual counts collapse a 3-tier fabric to 2 tiers",`the engine needs a core tier (${auto.sspine} switches) at this scale — a 2-tier fabric with these counts cannot be non-blocking`);
+    if(auto.sspine) mflag("Manual counts collapse a 3-tier fabric to 2 tiers",`the engine needs a core tier (${auto.sspine} switches) at this scale — a 2-tier fabric with these counts cannot be non-blocking`,1);
     if(P>1&&(L%P||S%P)) mflag(`Manual counts don't split evenly across ${P} planes`,`${L} leaf / ${S} spine must each be divisible by ${P} (identical planes) — sized with ${Math.floor(L/P)} leaf + ${Math.floor(S/P)} spine per plane`);
     if(L%2) mflag(`Odd leaf count (${L})`,"use an even number of leaf switches");
     if(S>0&&S%2) mflag(`Odd spine count (${S})`,"use an even number of spine switches so every leaf's uplinks stripe evenly");
@@ -1786,7 +1787,7 @@ function buildBOM(input){
       const need=Math.ceil(input.nodes/cap);
       if(blocksM<need){
         const nb=Math.ceil(input.nodes/blocksM);
-        mflag(`Too few leaf switches for the hosts`,`${input.nodes.toLocaleString()} hosts on ${blocksM} rail block(s) of ${lpb} leaves = ${nb} hosts per block > ${cap} (a leaf has ${R.down} host-facing ${R.unit}s) — needs ≥ ${need*lpb*P} leaf`);
+        mflag(`Too few leaf switches for the hosts`,`${input.nodes.toLocaleString()} hosts on ${blocksM} rail block(s) of ${lpb} leaves = ${nb} hosts per block > ${cap} (a leaf has ${R.down} host-facing ${R.unit}s) — needs ≥ ${need*lpb*P} leaf`,1);
         groups=[{leaves:lp,down:dn(nb),up:upn(nb)}];
       } else {
         const full=Math.floor(input.nodes/cap), rem=input.nodes-full*cap;
@@ -1803,21 +1804,21 @@ function buildBOM(input){
     }
     groups=groups.filter(g=>g.leaves>0);
     const maxDown=Math.max(...groups.map(g=>g.down));
-    if(maxDown>R.down&&!(aligned&&blocksM<Math.ceil(input.nodes/cap))) mflag(`Too few leaf switches for the host ports`,`${maxDown} host-facing ${R.unit}s per leaf > ${R.down} available`);
+    if(maxDown>R.down&&!(aligned&&blocksM<Math.ceil(input.nodes/cap))) mflag(`Too few leaf switches for the host ports`,`${maxDown} host-facing ${R.unit}s per leaf > ${R.down} available`,1);
     let links=0, ratioV=0, regimeM="flat", note="";
     if(sp===0){
-      if(lp>1&&!(ew.rtx&&lp===2)) mflag(`${lp} leaves per plane with no spine`,`more than one leaf needs a spine tier (or the RTX PRO collapsed-pair ISL) to interconnect — the fabric is not connected`);
+      if(lp>1&&!(ew.rtx&&lp===2)) mflag(`${lp} leaves per plane with no spine`,`more than one leaf needs a spine tier (or the RTX PRO collapsed-pair ISL) to interconnect — the fabric is not connected`,1);
       if(ew.rtx&&lp===2){ links=auto.spine===0?ew.links800/P:Math.min(maxDown,R.up); ratioV=1; }
       note="no spine tier";
     } else if(lp<=R.spine){
       /* flat 2-tier: every leaf → every spine, k equal integer links, rounded UP (≥1:1) */
       let G=groups.map(g=>({...g,k:g.up>0?Math.ceil(g.up/sp):1}));
       if(G.some(g=>g.k*sp>R.up)){ const kc=Math.floor(R.up/sp);
-        if(kc<1) mflag(`${sp} spines per plane exceed the leaf up-radix`,`a leaf has ${R.up} uplink ${R.unit}s — it cannot reach ${sp} spines`);
+        if(kc<1) mflag(`${sp} spines per plane exceed the leaf up-radix`,`a leaf has ${R.up} uplink ${R.unit}s — it cannot reach ${sp} spines`,1);
         G=G.map(g=>({...g,k:Math.min(g.k,Math.max(0,kc))})); }
       let sd=G.reduce((a,g)=>a+g.leaves*g.k,0);
       if(sd>R.spine){ const kc=Math.floor(R.spine/lp); G=G.map(g=>({...g,k:Math.min(g.k,Math.max(0,kc))})); sd=G.reduce((a,g)=>a+g.leaves*g.k,0);
-        mflag(`Spine ports exhausted`,`${lp} leaves × their uplinks need more than the ${R.spine} down-ports of each of ${sp} spine(s) — uplinks capped at ${kc} per spine`); }
+        mflag(`Spine ports exhausted`,`${lp} leaves × their uplinks need more than the ${R.spine} down-ports of each of ${sp} spine(s) — uplinks capped at ${kc} per spine`,1); }
       links=sp*sd; ratioV=Math.max(...G.filter(g=>g.up>0).map(g=>g.up/Math.max(1e-9,g.k*sp)),0);
       ew.__stripe={S:sp,groups:G.map(g=>({leaves:g.leaves,up:g.up,k:g.k})),spineDown:sd,links,kMax:Math.max(...G.map(g=>g.k)),kMin:Math.min(...G.map(g=>g.k))};
       note=G.map(g=>`${g.leaves} leaf × ${g.k*sp} up (${g.k} to each spine)`).join(" + ")+`; each spine ${sd}/${R.spine} down`;
@@ -1826,23 +1827,33 @@ function buildBOM(input){
       regimeM="sg"; const RP=ew.railsPerPlane||8;
       if(sp%RP) mflag(`Spines per plane (${sp}) not a multiple of ${RP} rails`,`with ${lp} leaves per plane (> ${R.spine} spine ports) the fabric needs rail-aligned spine groups — one group per rail, so spines/plane must be a multiple of ${RP}`);
       const sg=Math.floor(sp/RP);
-      if(sg<1){ mflag("Spine tier cannot be built",`${sp} spines per plane cannot form ${RP} rail spine groups`); }
+      if(sg<1){ mflag("Spine tier cannot be built",`${sp} spines per plane cannot form ${RP} rail spine groups`,1); }
       else {
         let G=groups.map(g=>({...g,k:g.up>0?Math.ceil(g.up/2/sg):1}));
         if(G.some(g=>2*g.k*sg>R.up)){ const kc=Math.floor(R.up/2/sg); G=G.map(g=>({...g,k:Math.min(g.k,kc)})); }
         let sd=G.reduce((a,g)=>a+(g.leaves/lpb)*g.k,0);
         if(sd>R.spine){ const kc=Math.floor(R.spine/(lp/lpb)); G=G.map(g=>({...g,k:Math.min(g.k,Math.max(0,kc))})); sd=G.reduce((a,g)=>a+(g.leaves/lpb)*g.k,0);
-          mflag("Spine-group ports exhausted",`${lp/lpb} rail leaves per group exceed the ${R.spine} down-ports per spine — uplinks capped`); }
+          mflag("Spine-group ports exhausted",`${lp/lpb} rail leaves per group exceed the ${R.spine} down-ports per spine — uplinks capped`,1); }
         links=G.reduce((a,g)=>a+g.leaves*2*g.k*sg,0); ratioV=Math.max(...G.filter(g=>g.up>0).map(g=>g.up/Math.max(1e-9,2*g.k*sg)),0);
         if(16%sg&&groups[0].up>=32) mflag(`Spine group size ${sg} doesn't divide a leaf's 16 up-cages per rail`,`uplinks rounded to ${G[0].k} per spine`);
         note=`${RP} rail spine groups × ${sg} spines; ${G.map(g=>`${g.leaves} leaf × ${2*g.k*sg} up (${g.k} per rail to each SG spine)`).join(" + ")}; each spine ${sd}/${R.spine} down`;
       }
     } else {
-      mflag(`Spine radix exceeded`,`${lp} leaves per plane exceed the ${R.spine}-port spine — a 2-tier fabric needs ≤ ${R.spine} leaves per plane${eth?" (or rail-aligned leaf blocks for spine groups)":""}; a 3rd tier is required`);
+      mflag(`Spine radix exceeded`,`${lp} leaves per plane exceed the ${R.spine}-port spine — a 2-tier fabric needs ≤ ${R.spine} leaves per plane${eth?" (or rail-aligned leaf blocks for spine groups)":""}; a 3rd tier is required`,1);
       note="not cablable as 2-tier";
     }
     const ratio=`${ratioV.toFixed(2)} : 1`;
-    if(ratioV>1.0001) mflag(`E-W oversubscribed ${ratio}`,`leaf uplink capacity is below the host-facing bandwidth — the RAs require 1:1 non-blocking for GPU fabrics; add spines (or rebalance leaves) to restore 1:1`);
+    if(ratioV>1.0001) mflag(`E-W oversubscribed ${ratio}`,`leaf uplink capacity is below the host-facing bandwidth — the RAs require 1:1 non-blocking for GPU fabrics; add spines (or rebalance leaves) to restore 1:1`,1);
+    /* 1:1 IS A HARD RULE: manual counts that cannot carry every host port non-blocking (oversubscribed, host
+       ports overflowing the leaves, spine ports exhausted, radix/tier exceeded, disconnected) are REJECTED —
+       the BOM keeps the engine's proven 1:1 sizing and never prices an oversubscribed leaf↔spine optic/fiber set */
+    if(hard.length){
+      const also=mfl.slice(1).map(f=>f.text).filter(t=>!hard.includes(t));
+      ew.manualRejected={L,S,reasons:hard.slice(),also,ratio};
+      flags.push(V.flag(`Manual E-W counts ${L} leaf + ${S} spine REJECTED — cannot be 1:1 non-blocking`,
+        `${hard.join("; ")}${ratioV>1.0001?` (would be ${ratio})`:""}. The BOM, optics and fibers use the engine's 1:1 sizing instead: ${auto.leaf} leaf + ${auto.spine} spine${auto.sspine?` + ${auto.sspine} core`:""}. Enter at least these counts (or switch Switch count to Auto)${also.length?`. Also: ${also.join("; ")}`:""}`));
+    } else {
+    flags.push(...mfl);
     const linksAll=links*P;
     ew={...ew,manual:true,leaf:L,spine:S,sspine:0,tier:2,tier3:false,regime:regimeM,rtx:ew.rtx&&S===0,
       links800:R.lG===800?linksAll:ew.links800, links400:R.lG===400?linksAll:ew.links400, upCages:linksAll, linksSS:linksAll, linksSC:0,
@@ -1858,6 +1869,7 @@ function buildBOM(input){
         mLayM.leaves.forEach(l=>{ l.k=kOf(l.down); l.up=l.k*(st?st.S:0); });
         mLayM.stripe=st; ew.xLS=mLayM.downCages; }
       ew.mg={...ew.mg,links800:linksAll,layout:mLayM||ew.mg.layout,twinHost:mLayM?mLayM.downCages:ew.mg.twinHost};
+    }
     }
     delete ew.__stripe;
   }
@@ -2170,30 +2182,39 @@ function buildBOM(input){
     status:(nsn.validated&&!ns.nicAdjusted)?"VALIDATED":(nsn.validated?"VERIFIED":"UNVALIDATED"),needs:nsn.needs,cites:[...(nsn.cites||[]),...feCite(input.nsnic)]}));
   if(input.dmode==="custom" && input.nscountmode==="manual" && (+input.nsleafn>0)){
     const L=Math.floor(+input.nsleafn), S=Math.max(0,Math.floor(+input.nsspinen||0)), a0={leaf:ns.leaf,spine:ns.spine,merged:ns.merged};
-    flags.push(V.flag(`Manual N-S switch counts: ${L} leaf + ${S} spine`,`user-set counts replace the ${a0.merged?"RA consolidation into the compute switches":`${a0.leaf} leaf + ${a0.spine} spine sizing`} — checks applied below; lines are DATASHEET-VERIFIED`));
-    if(a0.merged) flags.push(V.flag("N-S made dedicated by manual counts","the RA consolidates N-S into the compute switches at this scale — dedicated N-S leaves are an RA deviation"));
-    if(L%2) flags.push(V.flag(`Odd N-S leaf count (${L})`,"N-S leaves are deployed in pairs for dual-homed node attach (RA)"));
-    if(S%2&&S>0) flags.push(V.flag(`Odd N-S spine count (${S})`,"use an even number of spines so every leaf's uplinks stripe evenly"));
+    const nfl=[], nhard=[], fl={push:f=>nfl.push(f)}, hf=f=>{ nfl.push(f); nhard.push(f.text); };
+    fl.push(V.flag(`Manual N-S switch counts: ${L} leaf + ${S} spine`,`user-set counts replace the ${a0.merged?"RA consolidation into the compute switches":`${a0.leaf} leaf + ${a0.spine} spine sizing`} — checks applied below; lines are DATASHEET-VERIFIED`));
+    if(a0.merged) fl.push(V.flag("N-S made dedicated by manual counts","the RA consolidates N-S into the compute switches at this scale — dedicated N-S leaves are an RA deviation"));
+    if(L%2) fl.push(V.flag(`Odd N-S leaf count (${L})`,"N-S leaves are deployed in pairs for dual-homed node attach (RA)"));
+    if(S%2&&S>0) fl.push(V.flag(`Odd N-S spine count (${S})`,"use an even number of spines so every leaf's uplinks stripe evenly"));
     const alloc=ns.pCPU+(ns.pStor||0)+(ns.pMgmt||0)+(ns.pCust||0)+(ns.pSupp||0);
     const dPer=Math.ceil(alloc/Math.max(1,L));
     let links=0,k=0,ratio="—";
     if(S===0){
-      if(L>2) flags.push(V.flag(`${L} N-S leaves with no spine`,"more than one leaf pair needs an N-S spine tier to interconnect"));
-      if(dPer>(ns.R||64)) flags.push(V.flag("Too few N-S leaf ports",`${alloc} allocated 800G ports ÷ ${L} leaf = ${dPer} > ${ns.R||64} per switch`));
+      if(L>2) hf(V.flag(`${L} N-S leaves with no spine`,"more than one leaf pair needs an N-S spine tier to interconnect"));
+      if(dPer>(ns.R||64)) hf(V.flag("Too few N-S leaf ports",`${alloc} allocated 800G ports ÷ ${L} leaf = ${dPer} > ${ns.R||64} per switch`));
       links=L>=2?Math.max(1,Math.ceil(dPer/8)):0;           /* leaf-pair ISL */
     } else {
       const NR=ns.R||64, ND=NR/2;
-      if(dPer>ND) flags.push(V.flag("Too few N-S leaf ports",`${alloc} allocated 800G ports ÷ ${L} leaf = ${dPer} down per leaf > ${ND} (half the ${NR} ports face the spines at 1:1) — needs ≥ ${Math.ceil(alloc/ND)} leaf`));
+      if(dPer>ND) hf(V.flag("Too few N-S leaf ports",`${alloc} allocated 800G ports ÷ ${L} leaf = ${dPer} down per leaf > ${ND} (half the ${NR} ports face the spines at 1:1) — needs ≥ ${Math.ceil(alloc/ND)} leaf`));
       k=Math.ceil(Math.min(dPer,ND)/S); const kCap=Math.min(Math.floor(ND/S),Math.floor(NR/L));
-      if(kCap<1) flags.push(V.flag("N-S spine radix exceeded",`${L} leaves need ≥1 port on every ${NR}-port spine — not cablable as 2-tier`));
-      if(Math.min(dPer,ND)%S) flags.push(V.flag(`N-S leaf uplinks don't divide evenly by ${S} spines`,`rounded to ${Math.min(k,kCap)} per spine`));
+      if(kCap<1) hf(V.flag("N-S spine radix exceeded",`${L} leaves need ≥1 port on every ${NR}-port spine — not cablable as 2-tier`));
+      if(Math.min(dPer,ND)%S) fl.push(V.flag(`N-S leaf uplinks don't divide evenly by ${S} spines`,`rounded to ${Math.min(k,kCap)} per spine`));
       k=Math.max(0,Math.min(k,kCap)); links=L*S*k;
       const r=dPer/Math.max(1,S*k); ratio=`${r.toFixed(2)} : 1`;
-      if(r>1.0001) flags.push(V.flag(`N-S oversubscribed ${r.toFixed(2)} : 1`,`${dPer} down vs ${S*k} up per leaf — the converged N-S RA design is 1:1`));
+      if(r>1.0001) hf(V.flag(`N-S oversubscribed ${r.toFixed(2)} : 1`,`${dPer} down vs ${S*k} up per leaf — the converged N-S RA design is 1:1`));
     }
+    if(nhard.length){
+      /* 1:1 / port capacity is a HARD rule — reject, keep the engine sizing, never price an oversubscribed N-S */
+      const also=nfl.slice(1).map(f=>f.text).filter(t=>!nhard.includes(t));
+      ns.manualRejected={L,S,reasons:nhard.slice(),also,ratio};
+      flags.push(V.flag(`Manual N-S counts ${L} leaf + ${S} spine REJECTED — cannot carry every allocated port 1:1`,`${nhard.join("; ")}. The BOM uses the engine sizing instead: ${a0.merged?"merged into the compute switches (RA)":`${a0.leaf} leaf + ${a0.spine} spine`}. Enter at least these counts (or switch Switch count to Auto)${also.length?`. Also: ${also.join("; ")}`:""}`));
+    } else {
+    flags.push(...nfl);
     ns.leaf=L; ns.spine=S; ns.sspine=0; ns.merged=false; ns.adjusted=true; ns.manual=true; ns.mK=k;
     ns.xSS=2*links; ns.cSS=2*links; ns.pISL=2*links;
     ns.basis=`MANUAL counts: ${L} leaf + ${S} spine — ${alloc} allocated 800G ports (${dPer}/leaf), ${S?`${k} uplink(s) to each of ${S} spines`:"leaf-pair ISL"}; ${links} switch↔switch links; oversubscription ${ratio}`;
+    }
   }
   if(ns.infeasible) throw new Error(`N-S fabric not physically buildable: ${ns.infeasible}.`);
   ns.layout=ns.merged?null:E.nsLayout(ns,nsG); ns.groupsNS=nsG;
@@ -2732,8 +2753,14 @@ const Exporter = {
       return {ew:{leaf:b.ew.leaf,spine:(b.ew.spine||0)+(b.ew.sspine||0),planes:b.ew.planes||1,sspine:b.ew.sspine||0},
               ns:{leaf:b.ns.merged?0:b.ns.leaf,spine:b.ns.merged?0:(b.ns.spine||0)+(b.ns.sspine||0),sspine:b.ns.merged?0:(b.ns.sspine||0),merged:!!b.ns.merged}};
     }catch(err){ autoErr=String(err.message||err); return null; } }
+  function manualCheck(){
+    /* Manual counts are re-checked on EVERY form change (a NIC/server/host change after entering Manual can make
+       the typed totals too small) — the BOM rejects them and keeps the 1:1 engine sizing; the form says so */
+    try{ const i=collectInput(); i.growth=0; i.client=i.client||"x"; if(!(i.nodes>=1)) return {};
+      const b=buildBOM(i); return {ew:b.ew&&b.ew.manualRejected||null, ns:b.ns&&b.ns.manualRejected||null}; }catch(e){ return {}; } }
   function syncCounts(prefill){
     const custom=state.dmode==="custom", a=autoCounts();
+    const anyMan=custom&&(state.ewcountmode==="manual"||state.nscountmode==="manual"), mc=anyMan&&a?manualCheck():{};
     for(const f of ["ew","ns"]){
       $(f+"cnt-wrap").hidden=!custom;
       const man=custom&&state[f+"countmode"]==="manual";
@@ -2745,6 +2772,8 @@ const Exporter = {
       if(!a){ h.textContent=autoErr?`No sizing — ${autoErr}`:""; if(!man){ $(f+"leafn").value=""; $(f+"spinen").value=""; } }
       else if(f==="ew") h.textContent=man?`Engine sizing: ${a.ew.leaf} leaf + ${a.ew.spine} spine${a.ew.sspine?` (incl. ${a.ew.sspine} core)`:""}${a.ew.planes>1?` over ${a.ew.planes} planes`:""}. Your totals are rebuilt into links/optics and checked: host ports, 1:1, even counts, plane split, rail alignment, radix.`:`Auto: ${a.ew.leaf} leaf + ${a.ew.spine} spine (engine sizing).`;
       else h.textContent=man?`Engine sizing: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`}. Your totals are checked for port capacity, pairs, 1:1 and radix.`:`Auto: ${a.ns.merged?"merged into the compute switches (RA)":`${a.ns.leaf} leaf + ${a.ns.spine} spine${a.ns.sspine?` (incl. ${a.ns.sspine} core)`:""}`}.`;
+      h.classList.toggle("cnt-bad",!!(man&&mc[f]));
+      if(a&&man&&mc[f]) h.textContent=`⚠ ${mc[f].L} leaf + ${mc[f].S} spine cannot be 1:1 non-blocking (${mc[f].reasons.join("; ")}) — REJECTED: the BOM uses the engine sizing ${f==="ew"?`${a.ew.leaf} leaf + ${a.ew.spine} spine`:(a.ns.merged?"(merged into the compute switches)":`${a.ns.leaf} leaf + ${a.ns.spine} spine`)}. Enter at least those counts or switch to Auto.`;
     }
   }
   seg("ewcountmode",v=>syncCounts(v==="manual"?"ew":null)); seg("nscountmode",v=>syncCounts(v==="manual"?"ns":null));
@@ -4824,7 +4853,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="82";
+  const APP_BUILD="83";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
