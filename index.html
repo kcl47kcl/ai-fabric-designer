@@ -320,6 +320,14 @@ body.zv-open{overflow:hidden}
 .cf .cf-alt{margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--ok-bg);color:var(--fg)}
 .cf .cf-also{color:var(--muted);font-size:12.5px}
 .cf .cf-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;padding:10px 18px 16px;border-top:1px solid var(--border)}
+.savebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:10px 16px;margin-bottom:14px;font-size:13px}
+.savebar .sb-st{flex:1;min-width:200px;color:var(--muted)}.savebar .sb-st.ok{color:var(--ok);font-weight:600}
+.savebar.unsaved{border:1px solid var(--warn)}.savebar.unsaved .sb-st{color:var(--warn);font-weight:600}
+.sv-syncrow{margin:-4px 0 12px;font-size:12.5px}.sv-sync{color:var(--muted)}.sv-sync.ok{color:var(--ok)}.sv-sync.warn{color:var(--warn)}
+.sv-badge{color:var(--warn);font-weight:600}
+.sy-steps{margin:6px 0 10px 18px;padding:0;font-size:13px}.sy-steps li{margin:4px 0}
+.cf .field input{font:inherit;width:100%;box-sizing:border-box;color:var(--fg);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 12px}
+.cf code{font-size:12px}
 </style>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
@@ -4961,7 +4969,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     const input=collectInput();
     try{ const bom=buildBOM(input);
       if(bom.conflicts&&bom.conflicts.length){ showConflicts(bom,input,generate); return; }
-      render(bom); SAVED.put(input,bom); syncCounts(false); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
+      const prev=SAVED.bySig(input); show(input,bom,prev?prev.id:null); syncCounts(false); if(window.innerWidth<=980) mSet("results"); else { mSet("results"); $("results").scrollIntoView({block:"start"}); } }
     catch(err){ toast("Generation error: "+err.message); console.error(err); }
   }
 
@@ -4977,11 +4985,11 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
         if(!Number.isInteger(S)||S<0){ toast(`${n} manual switch count: spine total must be a whole number ≥ 0.`); $(f+"spinen").focus(); return; }
       }
     }
-    generate();
+    guardUnsaved(()=>generate(),collectInput());
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="84";
+  const APP_BUILD="85";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
@@ -4992,30 +5000,221 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   /* ---------- Saved designs: every generated design is kept on this device until deleted.
      Stores the INPUTS (small, exact); opening re-runs the engine so the BOM is re-validated
      against the current catalog — any catalog change since saving is called out. ---------- */
-  const SAVED=(()=>{
-    const KEY="aifd.saved.v1";
-    const read=()=>{ try{ return JSON.parse(localStorage.getItem(KEY)||"[]"); }catch(_){ return []; } };
-    const write=a=>{ try{ localStorage.setItem(KEY,JSON.stringify(a)); return true; }catch(_){ toast("Couldn't save — device storage unavailable or full"); return false; } };
-    try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(_){}
-    const sig=i=>JSON.stringify(i);
+  /* ---------- SAVED DESIGNS — explicit Save, one shared database for web + mobile ----------
+     • Generating does NOT save. A design is persistent only after Save; an unsaved design is lost when the app closes.
+     • Generating (or opening) another design while the current one is unsaved asks: save first, discard, or cancel.
+     • The shared database is a PRIVATE GitHub repo (designs/<id>.json), reached with the GitHub REST API from every
+       device running the app (desktop browser and the iPhone home-screen app read and write the same files).
+       Each device keeps a local mirror (instant list, offline) and a queue of saves/deletes not yet pushed.
+     • The token stays on the device that entered it (never in a design, export or backup). */
+  const SELF=!!window.AIFD_SELF_HOSTED;   /* GitHub Pages app (web + mobile); the claude.ai artifact is view-only */
+  const PAGES_URL="https://kcl47kcl.github.io/ai-fabric-designer/";
+  const sigOf=i=>JSON.stringify(i);
+  const SYNC=(()=>{
+    const CK="aifd.sync.v1";
+    let cfgMem=null;
+    const cfg=()=>{ if(cfgMem) return cfgMem; try{ cfgMem=JSON.parse(localStorage.getItem(CK)||"null"); }catch(_){ cfgMem=null; } return cfgMem; };
+    const setCfg=c=>{ cfgMem=c||null; try{ c?localStorage.setItem(CK,JSON.stringify(c)):localStorage.removeItem(CK); }catch(_){} };
+    const b64e=t=>{ const b=new TextEncoder().encode(t); let s=""; for(let i=0;i<b.length;i+=0x8000) s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000)); return btoa(s); };
+    const b64d=t=>new TextDecoder().decode(Uint8Array.from(atob(String(t).replace(/\s/g,"")),c=>c.charCodeAt(0)));
+    async function gh(path,opt={},c=cfg()){
+      const r=await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}${path}`,{method:opt.method||"GET",cache:"no-store",
+        headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",Authorization:`Bearer ${c.token}`,...(opt.body?{"Content-Type":"application/json"}:{})},
+        body:opt.body?JSON.stringify(opt.body):undefined});
+      return r;
+    }
+    const why=async r=>{ let m=""; try{ m=(await r.json()).message||""; }catch(_){} return `GitHub ${r.status}${m?` — ${m}`:""}`; };
     return {
-      list:()=>read().sort((a,b)=>b.ts-a.ts),
-      get:id=>read().find(r=>r.id===id),
-      put(input,bom){
-        const a=read(), now=Date.now(), s1=sig(input), dup=a.find(r=>sig(r.input)===s1);
-        const meta={nodes:bom.totalNodes||input.nodes,gpus:bom.totalGpus||input.nodes*input.gph,mode:input.dmode||"ra",
-          inc:bom.inc,mixed:!!bom.mixed,flags:bom.flags.length+bom.lines.filter(l=>l.status==="UNVALIDATED").length,
-          gpu:(CATALOG.gpus.find(g=>g.id===input.gpu)||{}).label||input.gpu,
-          server:(CATALOG.servers.find(x=>x.id===input.server)||{}).label||"Generic host",
-          ew:bom.inc.ew?bom.ewSwitch.id:null};
-        if(dup){ dup.ts=now; dup.cat=CATALOG.catalogVersion; dup.meta=meta; }
-        else a.push({id:"d"+now.toString(36)+Math.random().toString(36).slice(2,6),ts:now,client:input.client,descr:input.descr||"",cat:CATALOG.catalogVersion,input,meta});
-        if(write(a)){ const hb=$("hdr-saved"); if(hb&&!document.body.classList.contains("m-saved")) hb.textContent=`Saved designs (${a.length})`; }
+      cfg, setCfg, on:()=>{ const c=cfg(); return !!(c&&c.owner&&c.repo&&c.token); },
+      /* check a candidate configuration: repo reachable, PRIVATE, token can write */
+      async test(c){
+        const r=await gh("",{},c);
+        if(r.status===401) throw new Error("the token was rejected (expired or mistyped)");
+        if(r.status===404) throw new Error(`repo ${c.owner}/${c.repo} not found — or the token has no access to it`);
+        if(!r.ok) throw new Error(await why(r));
+        const j=await r.json();
+        if(!j.private) throw new Error(`${c.owner}/${c.repo} is PUBLIC — designs carry client names; use a private repository`);
+        if(j.permissions&&!j.permissions.push) throw new Error("the token can read but not write this repo — give it Contents: Read and write");
+        return j;
       },
-      del(id){ write(read().filter(r=>r.id!==id)); },
-      replaceAll(arr){ return write(arr); }
+      async list(){
+        const r=await gh("/contents/designs");
+        if(r.status===404) return [];                           /* empty repo or no designs folder yet */
+        if(!r.ok) throw new Error(await why(r));
+        const j=await r.json(); return (Array.isArray(j)?j:[]).filter(f=>f.type==="file"&&/\.json$/.test(f.name)).map(f=>({id:f.name.replace(/\.json$/,""),sha:f.sha}));
+      },
+      async get(id){
+        const r=await gh(`/contents/designs/${encodeURIComponent(id)}.json`);
+        if(!r.ok) throw new Error(await why(r));
+        const j=await r.json(); return {sha:j.sha,rec:JSON.parse(b64d(j.content))};
+      },
+      async put(rec,sha){
+        const body={message:`${sha?"Update":"Save"} design: ${rec.client||"Client"}${rec.descr?` — ${rec.descr}`:""}`,
+          content:b64e(JSON.stringify({app:"AI Fabric Designer",schema:2,id:rec.id,ts:rec.ts,client:rec.client,descr:rec.descr,cat:rec.cat,input:rec.input,meta:rec.meta},null,1))};
+        if(sha) body.sha=sha;
+        let r=await gh(`/contents/designs/${encodeURIComponent(rec.id)}.json`,{method:"PUT",body});
+        if((r.status===409||r.status===422)&&!sha){ /* already exists remotely (saved on another device) — overwrite with the current sha */
+          try{ const cur=await this.get(rec.id); body.sha=cur.sha; r=await gh(`/contents/designs/${encodeURIComponent(rec.id)}.json`,{method:"PUT",body}); }catch(_){} }
+        if(!r.ok) throw new Error(await why(r));
+        return (await r.json()).content.sha;
+      },
+      async del(id,sha){
+        if(!sha){ try{ sha=(await this.get(id)).sha; }catch(_){ return; } }
+        const r=await gh(`/contents/designs/${encodeURIComponent(id)}.json`,{method:"DELETE",body:{message:`Delete design ${id}`,sha}});
+        if(!r.ok&&r.status!==404) throw new Error(await why(r));
+      }
     };
   })();
+  const SAVED=(()=>{
+    const KEY="aifd.saved.v1", DKEY="aifd.saved.del.v1";
+    const rd=k=>{ try{ return JSON.parse(localStorage.getItem(k)||"[]"); }catch(_){ return []; } };
+    const wr=(k,a)=>{ try{ localStorage.setItem(k,JSON.stringify(a)); return true; }catch(_){ toast("Couldn't save — device storage unavailable or full"); return false; } };
+    try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(_){}
+    const metaOf=(input,bom)=>({nodes:bom.totalNodes||input.nodes,gpus:bom.totalGpus||input.nodes*input.gph,mode:input.dmode||"ra",
+      inc:bom.inc,mixed:!!bom.mixed,flags:bom.flags.length+bom.lines.filter(l=>l.status==="UNVALIDATED").length,
+      gpu:(CATALOG.gpus.find(g=>g.id===input.gpu)||{}).label||input.gpu,
+      server:(CATALOG.servers.find(x=>x.id===input.server)||{}).label||"Generic host",
+      ew:bom.inc.ew?bom.ewSwitch.id:null,ratio:bom.ratio||1});
+    let state={busy:false,last:0,err:null};
+    const S={
+      list:()=>rd(KEY).sort((a,b)=>b.ts-a.ts),
+      get:id=>rd(KEY).find(r=>r.id===id),
+      bySig:input=>{ const s1=sigOf(input); return rd(KEY).find(r=>r.v===2&&sigOf(r.input)===s1); },
+      /* explicit Save: local mirror first (instant, offline-safe), queued for the shared database */
+      put(input,bom){
+        const a=rd(KEY), now=Date.now(), s1=sigOf(input), dup=a.find(r=>r.v===2&&sigOf(r.input)===s1), meta=metaOf(input,bom);
+        let rec;
+        if(dup){ dup.ts=now; dup.cat=CATALOG.catalogVersion; dup.meta=meta; dup.pending=true; rec=dup; }
+        else { rec={v:2,id:"d"+now.toString(36)+Math.random().toString(36).slice(2,6),ts:now,client:input.client,descr:input.descr||"",cat:CATALOG.catalogVersion,input,meta,pending:true}; a.push(rec); }
+        if(!wr(KEY,a)) return null;
+        hdrCount(); S.sync(); return rec.id;
+      },
+      del(id){
+        const a=rd(KEY), r=a.find(x=>x.id===id); wr(KEY,a.filter(x=>x.id!==id));
+        if(r&&r.v===2&&(r.sha||!r.pending)){ const d=rd(DKEY); d.push({id,sha:r.sha||null}); wr(DKEY,d); }
+        hdrCount(); S.sync();
+      },
+      /* restore from a backup file / adopt a design saved by an earlier build: becomes a normal (shared) saved design */
+      adopt(recs){ const a=rd(KEY), ids=new Set(a.map(r=>r.id)); let n=0;
+        for(const r of recs){ if(!r||!r.input||!r.id) continue; const i=a.findIndex(x=>x.id===r.id);
+          const rec={v:2,id:r.id,ts:r.ts||Date.now(),client:r.client||r.input.client,descr:r.descr||r.input.descr||"",cat:r.cat||CATALOG.catalogVersion,input:r.input,meta:r.meta||{},pending:true};
+          if(i>=0){ if(a[i].v===2) continue; a[i]=rec; } else a.push(rec); n++; if(!ids.has(r.id)) ids.add(r.id); }
+        wr(KEY,a); hdrCount(); S.sync(); return n; },
+      replaceAll(arr){ return wr(KEY,arr); },
+      pendingCount:()=>rd(KEY).filter(r=>r.v===2&&r.pending).length+rd(DKEY).length,
+      status:()=>state,
+      /* two-way sync with the shared repo: push deletes + saves, then pull every remote design (by blob sha) */
+      async sync(){
+        if(!SELF||!SYNC.on()||state.busy) return;
+        if(navigator.onLine===false){ state.err="offline — changes are queued on this device"; paintSync(); return; }
+        state.busy=true; paintSync();
+        try{
+          for(const d of rd(DKEY)){ await SYNC.del(d.id,d.sha); wr(DKEY,rd(DKEY).filter(x=>x.id!==d.id)); }
+          for(const r of rd(KEY).filter(x=>x.v===2&&x.pending)){
+            const sha=await SYNC.put(r,r.sha); const a=rd(KEY), x=a.find(y=>y.id===r.id); if(x){ x.sha=sha; x.pending=false; wr(KEY,a); } }
+          const remote=await SYNC.list(), rIds=new Set(remote.map(x=>x.id));
+          let a=rd(KEY);
+          for(const f of remote){ const loc=a.find(x=>x.id===f.id);
+            if(loc&&(loc.sha===f.sha||loc.pending)) continue;
+            const g=await SYNC.get(f.id); const rec={v:2,id:f.id,ts:g.rec.ts,client:g.rec.client,descr:g.rec.descr||"",cat:g.rec.cat,input:g.rec.input,meta:g.rec.meta||{},sha:g.sha,pending:false};
+            a=rd(KEY); const i=a.findIndex(x=>x.id===f.id); if(i>=0) a[i]=rec; else a.push(rec); wr(KEY,a); }
+          a=rd(KEY); const gone=a.filter(x=>x.v===2&&!x.pending&&x.sha&&!rIds.has(x.id)).map(x=>x.id);   /* deleted on another device */
+          if(gone.length) wr(KEY,a.filter(x=>!gone.includes(x.id)));
+          state.err=null; state.last=Date.now();
+        }catch(e){ state.err=String(e.message||e); }
+        finally{ state.busy=false; hdrCount(); paintSync(); if(document.body.classList.contains("m-saved")) renderSaved(); paintSaveBar(); }
+      }
+    };
+    return S;
+  })();
+  const savedCount=()=>SAVED.list().filter(r=>r.v===2).length;
+  function hdrCount(){ const hb=$("hdr-saved"); if(hb&&!document.body.classList.contains("m-saved")){ const n=savedCount(); hb.textContent=`Saved designs${n?` (${n})`:""}`; } }
+  function syncLine(){
+    if(!SYNC.on()) return `<span class="sv-sync warn">Shared database not set up — saves stay on this device until you set up sync.</span>`;
+    const st=SAVED.status(), c=SYNC.cfg(), p=SAVED.pendingCount();
+    if(st.busy) return `<span class="sv-sync">Syncing with ${esc(c.owner)}/${esc(c.repo)}…</span>`;
+    if(st.err) return `<span class="sv-sync warn">Sync problem: ${esc(st.err)}${p?` · ${p} change(s) waiting`:""}</span>`;
+    return `<span class="sv-sync ok">Shared database: ${esc(c.owner)}/${esc(c.repo)} (private)${st.last?` · synced ${new Date(st.last).toLocaleTimeString([], {timeStyle:"short"})}`:""}${p?` · ${p} change(s) waiting`:""}</span>`;
+  }
+  function paintSync(){ const el=$("sv-syncline"); if(el) el.innerHTML=syncLine(); }
+
+  /* ---------- the design on screen: saved or not ---------- */
+  let CUR=null;   /* {input, bom, id|null} — id set once saved (or opened from saved designs) */
+  function show(input,bom,id){ render(bom); CUR={input,bom,id:id||null}; paintSaveBar(); }
+  function paintSaveBar(){
+    const res=$("results"); if(!res||!CUR) return; let bar=$("savebar");
+    if(!bar){ bar=document.createElement("div"); bar.id="savebar"; bar.className="savebar"; res.prepend(bar); }
+    else if(bar.parentNode!==res||res.firstChild!==bar) res.prepend(bar);
+    if(!SELF){ bar.innerHTML=`<span class="sb-st">View only — designs are saved in the <a href="${PAGES_URL}" target="_blank" rel="noopener">AI Fabric Designer app</a> (web and iPhone share one database).</span>`; return; }
+    const saved=!!(CUR.id&&SAVED.get(CUR.id)), r=saved?SAVED.get(CUR.id):null;
+    bar.classList.toggle("unsaved",!saved);
+    bar.innerHTML=saved
+      ?`<span class="sb-st ok">✓ Saved${r&&r.pending?(SYNC.on()?" · syncing to the shared database…":" · on this device only (sync not set up)"):" · in the shared database"}</span>`
+      :`<span class="sb-st">● Not saved — this design is discarded when you close the app or generate another</span><button type="button" class="btn primary small" id="sb-save">Save design</button>`;
+    const b=$("sb-save"); if(b) b.onclick=()=>saveCurrent();
+  }
+  function saveCurrent(){
+    if(!CUR) return false;
+    const id=SAVED.put(CUR.input,CUR.bom); if(!id) return false;
+    CUR.id=id; paintSaveBar();
+    toast(SYNC.on()?"Design saved — syncing to the shared database":"Design saved on this device — set up sync in Saved designs to share it with your other devices",true);
+    return true;
+  }
+  const isUnsaved=()=>SELF&&CUR&&!(CUR.id&&SAVED.get(CUR.id));
+  /* ask before replacing an unsaved design; cont() runs after Save / Discard, never after Cancel */
+  function guardUnsaved(cont,nextInput){
+    if(!isUnsaved()||(nextInput&&sigOf(nextInput)===sigOf(CUR.input))){ cont(); return; }
+    const old=document.querySelector(".cf-back"); if(old) old.remove();
+    const i=CUR.input, back=document.createElement("div"); back.className="cf-back";
+    back.innerHTML=`<div class="cf" role="dialog" aria-modal="true" aria-labelledby="us-t">
+      <div class="cf-head"><div class="cf-ic">💾</div><div><h3 id="us-t">Save the current design first?</h3>
+        <div class="note" style="margin-top:4px"><b>${esc(i.client||"Client")}</b>${i.descr?` — ${esc(i.descr)}`:""} · ${(CUR.bom.totalNodes||i.nodes).toLocaleString()} hosts is not saved. If you don't save it, it is discarded.</div></div></div>
+      <div class="cf-foot">
+        <button type="button" class="btn neutral small" data-us="cancel">Cancel</button>
+        <button type="button" class="btn neutral small" data-us="discard">Discard and continue</button>
+        <button type="button" class="btn primary small" data-us="save">Save, then continue</button></div></div>`;
+    document.body.appendChild(back);
+    const close=()=>back.remove();
+    back.querySelector('[data-us="cancel"]').onclick=close;
+    back.addEventListener("click",e=>{ if(e.target===back) close(); });
+    back.querySelector('[data-us="discard"]').onclick=()=>{ close(); CUR=null; cont(); };
+    back.querySelector('[data-us="save"]').onclick=()=>{ close(); if(saveCurrent()) cont(); };
+    back.querySelector('[data-us="save"]').focus();
+  }
+  window.addEventListener("beforeunload",e=>{ if(isUnsaved()){ e.preventDefault(); e.returnValue=""; } });
+
+  /* ---------- shared-database setup ---------- */
+  function syncSetup(){
+    const old=document.querySelector(".cf-back"); if(old) old.remove();
+    const c=SYNC.cfg()||{owner:"kcl47kcl",repo:"ai-fabric-designs",token:""};
+    const back=document.createElement("div"); back.className="cf-back";
+    back.innerHTML=`<div class="cf" role="dialog" aria-modal="true" aria-labelledby="sy-t">
+      <div class="cf-head"><div class="cf-ic">⇅</div><div><h3 id="sy-t">Shared database — GitHub</h3>
+        <div class="note" style="margin-top:4px">Saved designs live in a <b>private</b> GitHub repository, so this computer and your iPhone app see the same list. Set this up once on each device.</div></div></div>
+      <div class="cf-body">
+        <ol class="sy-steps"><li>Create a private repo (once): <a href="https://github.com/new?name=ai-fabric-designs&visibility=private&description=AI%20Fabric%20Designer%20saved%20designs" target="_blank" rel="noopener">github.com/new</a> — name <code>ai-fabric-designs</code>, <b>Private</b>.</li>
+          <li>Create a fine-grained token: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → Settings → Fine-grained tokens</a> — Repository access: <b>only</b> that repo; Permissions: <b>Contents: Read and write</b>.</li>
+          <li>Paste it below (it stays on this device only).</li></ol>
+        <div class="row2"><div class="field"><label for="sy-owner">Owner</label><input id="sy-owner" value="${esc(c.owner)}" autocomplete="off" autocapitalize="off"></div>
+          <div class="field"><label for="sy-repo">Repository</label><input id="sy-repo" value="${esc(c.repo)}" autocomplete="off" autocapitalize="off"></div></div>
+        <div class="field" style="margin-top:8px"><label for="sy-token">Token</label><input id="sy-token" type="password" value="${esc(c.token)}" placeholder="github_pat_…" autocomplete="off" autocapitalize="off"></div>
+        <div class="help" id="sy-msg" style="display:block;margin-top:6px"></div>
+      </div>
+      <div class="cf-foot">${SYNC.on()?`<button type="button" class="btn danger small" data-sy="off">Disconnect this device</button>`:""}
+        <button type="button" class="btn neutral small" data-sy="cancel">Cancel</button>
+        <button type="button" class="btn primary small" data-sy="go">Connect</button></div></div>`;
+    document.body.appendChild(back);
+    const close=()=>back.remove(), msg=$("sy-msg");
+    back.querySelector('[data-sy="cancel"]').onclick=close;
+    const off=back.querySelector('[data-sy="off"]'); if(off) off.onclick=()=>{ SYNC.setCfg(null); close(); renderSaved(); toast("This device is disconnected from the shared database (its saved designs stay here)",true); };
+    back.querySelector('[data-sy="go"]').onclick=async()=>{
+      const n={owner:$("sy-owner").value.trim(),repo:$("sy-repo").value.trim(),token:$("sy-token").value.trim()};
+      if(!n.owner||!n.repo||!n.token){ msg.textContent="Owner, repository and token are all required."; return; }
+      msg.textContent="Checking…";
+      try{ await SYNC.test(n); SYNC.setCfg(n); close(); toast(`Connected to ${n.owner}/${n.repo} — syncing`,true); await SAVED.sync(); renderSaved(); }
+      catch(e){ msg.textContent="Not connected: "+(e.message||e); }
+    };
+  }
   async function designPack(rec){
     const bom=buildBOM(rec.input), i=rec.input, enc=t=>new TextEncoder().encode(t), files=[];
     files.push({name:`${exName(i)}.xlsx`,data:new Uint8Array(await Exporter.xlsx(bom).arrayBuffer())});
@@ -5026,31 +5225,42 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     return new Blob([await z.arrayBuffer()],{type:"application/zip"});
   }
   function renderSaved(){
-    const v=$("saved-view"), L=SAVED.list();
+    const v=$("saved-view"), all=SAVED.list(), L=all.filter(r=>r.v===2), old=all.filter(r=>r.v!==2);
     const fabs=inc=>["ew","ns","st","oob"].filter(f=>!inc||inc[f]).map(f=>({ew:"E-W",ns:"N-S",st:"Storage",oob:"OOB"})[f]).join(" · ");
-    v.innerHTML=`<div class="sv-head"><h2>Saved designs</h2><span class="note">${L.length} on this device</span><span class="spacer"></span>
-      <button class="btn neutral small" id="sv-backup" type="button"${L.length?"":" disabled"}>Back up all</button>
-      <label class="btn neutral small" style="display:inline-flex;align-items:center">Restore backup<input type="file" id="sv-restore" accept=".json,application/json" hidden></label></div>`
-      +(L.length?`<div class="sv-list">${L.map(r=>`
+    const item=(r,legacy)=>`
       <div class="sv-item" data-id="${r.id}">
         <div class="sv-top"><div class="sv-title">${esc(r.client||"Client")}${r.descr?`<small>${esc(r.descr)}</small>`:""}</div>${r.meta&&r.meta.flags?stIcon("UNVALIDATED"):stIcon("VALIDATED")}</div>
         <div class="sv-meta"><span><b>${(r.meta&&r.meta.nodes||0).toLocaleString()}</b> hosts</span><span><b>${(r.meta&&r.meta.gpus||0).toLocaleString()}</b> GPUs</span>
-          <span>${esc(r.meta?r.meta.server:"")}${r.meta&&r.meta.mixed?" + group 2":""}</span><span>${r.meta&&r.meta.mode==="custom"?"Custom":"RA"} · ${fabs(r.meta&&r.meta.inc)}</span>
-          <span>${new Date(r.ts).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})} · catalog v${esc(r.cat)}</span></div>
+          <span>${esc(r.meta?r.meta.server||"":"")}${r.meta&&r.meta.mixed?" + group 2":""}</span><span>${r.meta&&r.meta.mode==="custom"?"Custom":"RA"} · ${fabs(r.meta&&r.meta.inc)}${r.meta&&r.meta.ratio>1?` · ${r.meta.ratio}:1`:""}</span>
+          <span>${new Date(r.ts).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})} · catalog v${esc(r.cat)}</span>
+          ${legacy?`<span class="sv-badge">this device only · auto-saved by an earlier build</span>`:(r.pending?`<span class="sv-badge">${SYNC.on()?"waiting to sync":"this device only — sync not set up"}</span>`:"")}</div>
         <div class="sv-actions"><button class="btn primary small" data-act="open" type="button">Open</button>
+          ${legacy&&SELF?`<button class="btn neutral small" data-act="keep" type="button">Keep — save to shared</button>`:""}
           <button class="btn neutral small" data-act="pack" type="button">Download design pack</button>
           <button class="btn neutral small" data-act="xlsx" type="button">Excel</button>
-          <button class="btn danger small" data-act="del" type="button">Delete</button></div>
-      </div>`).join("")}</div>`
-      :`<div class="sv-empty">No saved designs yet.<br>Every design you generate is saved here automatically — open, download or delete it any time.</div>`);
+          ${SELF?`<button class="btn danger small" data-act="del" type="button">Delete</button>`:""}</div>
+      </div>`;
+    v.innerHTML=`<div class="sv-head"><h2>Saved designs</h2><span class="note">${L.length} saved</span><span class="spacer"></span>
+      ${SELF?`<button class="btn neutral small" id="sv-syncnow" type="button"${SYNC.on()?"":" hidden"}>Sync now</button>
+      <button class="btn neutral small" id="sv-setup" type="button">${SYNC.on()?"Sync settings":"Set up sync"}</button>`:""}
+      <button class="btn neutral small" id="sv-backup" type="button"${all.length?"":" disabled"}>Back up all</button>
+      ${SELF?`<label class="btn neutral small" style="display:inline-flex;align-items:center">Restore backup<input type="file" id="sv-restore" accept=".json,application/json" hidden></label>`:""}</div>
+      ${SELF?`<div class="sv-syncrow" id="sv-syncline">${syncLine()}</div>`:`<div class="sv-syncrow"><span class="sv-sync warn">This page is view-only. Saving, and the database shared by web and iPhone, are in the <a href="${PAGES_URL}" target="_blank" rel="noopener">AI Fabric Designer app</a>. Designs kept here by earlier builds can be moved with <b>Back up all</b> → <b>Restore backup</b> in the app.</span></div>`}`
+      +(L.length?`<div class="sv-list">${L.map(r=>item(r,false)).join("")}</div>`
+        :(SELF?`<div class="sv-empty">No saved designs yet.<br>Generate a design, then press <b>Save design</b> at the top of the results — only saved designs are kept.</div>`:""))
+      +(old.length?`<div class="sv-head" style="margin-top:18px"><h2 style="font-size:15px">Kept on this device by earlier builds (${old.length})</h2><span class="spacer"></span>
+          ${SELF?`<button class="btn neutral small" id="sv-keepall" type="button">Keep all — save to shared</button><button class="btn danger small" id="sv-dropall" type="button">Discard all</button>`:""}</div>
+          <div class="note" style="margin:-6px 0 10px">Earlier builds saved every generated design automatically. Keep the ones you want; the rest can be discarded.</div>
+          <div class="sv-list">${old.map(r=>item(r,true)).join("")}</div>`:"");
     v.querySelectorAll(".sv-item").forEach(el=>{
       const id=el.dataset.id;
       el.querySelector('[data-act="open"]').onclick=()=>{
         const r=SAVED.get(id); if(!r) return;
-        try{ render(buildBOM(r.input)); mSet("results");
+        guardUnsaved(()=>{ try{ show(r.input,buildBOM(r.input),r.id); mSet("results");
           if(r.cat!==CATALOG.catalogVersion) toast(`Re-validated against catalog v${CATALOG.catalogVersion} (saved with v${r.cat}) — quantities reflect the current evidence`,true);
-        }catch(e){ toast("Couldn't open this design: "+e.message); }
+        }catch(e){ toast("Couldn't open this design: "+e.message); } });
       };
+      const kp=el.querySelector('[data-act="keep"]'); if(kp) kp.onclick=()=>{ const r=SAVED.get(id); if(r){ SAVED.adopt([r]); renderSaved(); toast("Kept — saved to the shared database",true); } };
       el.querySelector('[data-act="pack"]').onclick=async()=>{
         const r=SAVED.get(id); if(!r) return;
         try{ const fn=`${exName(r.input)}.zip`; const res=await Exporter.save(fn,await designPack(r)); if(res!=="saved"&&res!=="shared") toast(res==="declined"?"Save declined":"Download unavailable here"); }
@@ -5061,26 +5271,35 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
         try{ await Exporter.save(`${exName(r.input)}.xlsx`,Exporter.xlsx(buildBOM(r.input))); }catch(e){ toast("Excel export failed: "+e.message); }
       };
       const db=el.querySelector('[data-act="del"]'); let t=null;
-      db.onclick=()=>{
+      if(db) db.onclick=()=>{
         if(!db.classList.contains("armed")){ db.classList.add("armed"); db.textContent="Tap again to delete"; t=setTimeout(()=>{db.classList.remove("armed");db.textContent="Delete";},3500); return; }
-        clearTimeout(t); SAVED.del(id); renderSaved(); toast("Design deleted",true);
+        clearTimeout(t); SAVED.del(id); if(CUR&&CUR.id===id) CUR.id=null; renderSaved(); paintSaveBar(); toast(SYNC.on()?"Design deleted — on every device":"Design deleted",true);
       };
     });
+    const sn=$("sv-syncnow"); if(sn) sn.onclick=()=>SAVED.sync();
+    const su=$("sv-setup"); if(su) su.onclick=syncSetup;
+    const ka=$("sv-keepall"); if(ka) ka.onclick=()=>{ const n=SAVED.adopt(old); renderSaved(); toast(`Kept ${n} design${n===1?"":"s"} — saved to the shared database`,true); };
+    const da=$("sv-dropall"); if(da){ let t2=null; da.onclick=()=>{
+      if(!da.classList.contains("armed")){ da.classList.add("armed"); da.textContent="Tap again to discard all"; t2=setTimeout(()=>{da.classList.remove("armed");da.textContent="Discard all";},3500); return; }
+      clearTimeout(t2); SAVED.replaceAll(SAVED.list().filter(r=>r.v===2)); hdrCount(); renderSaved(); toast(`Discarded ${old.length} design${old.length===1?"":"s"}`,true); }; }
     const bk=$("sv-backup"); if(bk) bk.onclick=async()=>{
-      const blob=new Blob([JSON.stringify({app:"AI Fabric Designer",kind:"saved-designs-backup",exported:new Date().toISOString(),designs:SAVED.list()},null,1)],{type:"application/json"});
+      const blob=new Blob([JSON.stringify({app:"AI Fabric Designer",kind:"saved-designs-backup",exported:new Date().toISOString(),designs:SAVED.list().map(({sha,pending,...r})=>r)},null,1)],{type:"application/json"});
       await Exporter.save(`AI Fabric Designer - saved designs backup ${new Date().toISOString().slice(0,10)}.json`,blob);
     };
     const rs=$("sv-restore"); if(rs) rs.onchange=async()=>{
       try{ const f=rs.files[0]; if(!f) return; const j=JSON.parse(await f.text());
         const inc=(j.designs||(j.saved?[j.saved]:[])).filter(r=>r&&r.input&&r.id);
         if(!inc.length){ toast("No designs found in that file"); return; }
-        const cur=SAVED.list(), ids=new Set(cur.map(r=>r.id)), add=inc.filter(r=>!ids.has(r.id));
-        SAVED.replaceAll([...cur,...add]); renderSaved(); toast(`Restored ${add.length} design${add.length===1?"":"s"}${inc.length>add.length?` (${inc.length-add.length} already here)`:""}`,true);
+        const n=SAVED.adopt(inc); renderSaved(); toast(`Restored ${n} design${n===1?"":"s"}${inc.length>n?` (${inc.length-n} already here)`:""}`,true);
       }catch(e){ toast("Couldn't read that backup: "+e.message); }
     };
   }
   $("hdr-saved").addEventListener("click",()=>mSet(document.body.classList.contains("m-saved")?"results":"saved"));
-  { const n=SAVED.list().length; if(n) $("hdr-saved").textContent=`Saved designs (${n})`; }
+  hdrCount();
+  if(!SELF&&!SAVED.list().length){ const hb=$("hdr-saved"), mb=$("mnav-saved"); if(hb) hb.hidden=true; if(mb) mb.hidden=true; }
+  if(SELF){ setTimeout(()=>SAVED.sync(),800);
+    document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") SAVED.sync(); });
+    window.addEventListener("online",()=>SAVED.sync()); }
 
   /* ---------- Mobile app shell: Design / Results views (≤980px; desktop unaffected) ---------- */
   function mSet(v){
@@ -5088,7 +5307,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     document.body.classList.toggle("m-results",v==="results");
     document.body.classList.toggle("m-saved",v==="saved");
     [["mnav-design","design"],["mnav-saved","saved"],["mnav-results","results"]].forEach(([id,k])=>{ const b=$(id); if(b) b.setAttribute("aria-pressed",v===k?"true":"false"); });
-    const hb=$("hdr-saved"); if(hb) hb.textContent=v==="saved"?"← Back to designer":`Saved designs${SAVED.list().length?` (${SAVED.list().length})`:""}`;
+    const hb=$("hdr-saved"); if(hb) hb.textContent=v==="saved"?"← Back to designer":`Saved designs${savedCount()?` (${savedCount()})`:""}`;
     if(v==="saved") renderSaved();
     window.scrollTo({top:0});
   }
