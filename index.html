@@ -1636,6 +1636,11 @@ const Validator = (() => {
    ===================================================================== */
 /* E-W leaf ratio wording for every view / summary: "1:1 non-blocking" or "2:1 oversubscribed (leaf)" */
 function ovsTxt(bom,short){ const r=(bom&&bom.ratio)||1; return r>1?(short?`${r}:1`:`${r}:1 oversubscribed (leaf)`):(short?"1:1":"1:1 non-blocking"); }
+/* BILL OF MATERIALS (NETWORKING): the BOM shown and exported lists the networking parts only — switches, optics, cables,
+   fiber, fabric management. GPU servers and host NICs / SuperNICs / DPUs stay in the engine (they drive every port count,
+   host-side optic and evidence flag) but are not BOM line items. */
+const NON_NET_ROLES=new Set(["GPU server","NIC / SuperNIC","NIC / HCA","DPU / NIC","NIC"]);
+const netLines=ls=>(ls||[]).filter(l=>!NON_NET_ROLES.has(l.role));
 function buildBOM(input){
   const C=CATALOG, E=Engine, V=Validator;
   const flags=[], lines=[], notes=[];
@@ -2525,7 +2530,7 @@ const Exporter = {
     const esc=s=>`"${String(s??"").replace(/"/g,'""')}"`;
     const hasF=!!bom.future;
     const rows=[["Fabric","SKU / OPN","Description","Role","Qty (now)",...(hasF?[`Qty @ ${bom.future.nodes} hosts`]:[]),"Qty math","Spares","UoM","Status","Citation"]];
-    const all=[...bom.lines,...(hasF?bom.future.futureOnly.map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
+    const all=[...netLines(bom.lines),...(hasF?netLines(bom.future.futureOnly).map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
     for(const l of all){
       rows.push([{ew:"East-West",ns:"North-South (converged)",st:"Storage",oob:"OOB Mgmt",fiber:"Fiber plant"}[l.fabric],
         l.sku,l.desc,l.role+(l.use?` — ${l.use}`:""),l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.futureOnly?"":(l.spares??""),l.uom,(l.status==="VERIFIED"?"DATASHEET-VERIFIED":l.status) + (l.eol?" (EOL part)":"") + (l.futureOnly?" (added at growth)":""),
@@ -2603,7 +2608,7 @@ const Exporter = {
     const hasF=!!bom.future;
     const fab={ew:"East-West",ns:"North-South (converged)",st:"Storage",oob:"OOB Mgmt",fiber:"Fiber plant"};
     const head=["Fabric","SKU / OPN","Description","Role","Qty (now)",...(hasF?[`Qty @ ${bom.future.nodes} hosts`]:[]),"Qty math","UoM","Status","Citations / evidence needed"];
-    const all=[...bom.lines,...(hasF?bom.future.futureOnly.map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
+    const all=[...netLines(bom.lines),...(hasF?netLines(bom.future.futureOnly).map(l=>({...l,futureOnly:true,fQty:l.qty})):[])];
     const rows=[head];
     for(const l of all) rows.push([fab[l.fabric],l.sku,l.desc,l.role+(l.use?` — ${l.use}`:""),l.futureOnly?"":l.qty,...(hasF?[l.fQty??""]:[]),l.math,l.uom,
       (l.status==="VERIFIED"?"DATASHEET-VERIFIED":l.status)+(l.eol?" (EOL part)":"")+(l.futureOnly?" (added at growth)":""),
@@ -2626,7 +2631,7 @@ const Exporter = {
     const enc=t=>new TextEncoder().encode(t);
     const ct=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
     const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
-    const wb=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Total quantities" sheetId="1" r:id="rId1"/><sheet name="BOM" sheetId="2" r:id="rId2"/></sheets></workbook>`;
+    const wb=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Total quantities" sheetId="1" r:id="rId1"/><sheet name="Bill of Materials (Networking)" sheetId="2" r:id="rId2"/></sheets></workbook>`;
     const wbRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
     const styles=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf/><xf fontId="1" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     return Exporter._zip([
@@ -4444,11 +4449,20 @@ const Exporter = {
      one labeled "identical" frame so the import stays within Lucid's shape limits.
      ===================================================================== */
   const cdEsc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  const CD={hw:46,hh:20,hg:4,suPad:6,suHead:14,suGap:10,blkPad:10,blkGap:26,podGap:48,leafW:118,leafH:34,swW:96,swH:30,budget:24000};
+  const CD={hw:124,hh:40,hg:5,suPad:6,suHead:14,suGap:10,blkPad:10,blkGap:26,podGap:48,leafW:132,leafH:46,swW:120,swH:40,budget:24000};
+  /* host box text: server model + GPUs (group 2 of a mixed design has its own platform) */
+  const cdShortSrv=srv=>srv?srv.label.replace(/\s*\(.*\)\s*$/,"").replace(/^(Dell|Supermicro|Cisco|HPE|Lenovo) /,""):"Generic GPU host";
+  const cdShortGpu=g=>g?g.label.replace(/^NVIDIA /,""):"GPU";
+  const cdHostDesc=(b,g)=>{ const i=b.input;
+    if(g===2&&b.g2) return {m:cdShortSrv(b.g2.srv),gp:`${b.g2.gph}× ${cdShortGpu(b.g2.gpu)}`};
+    return {m:cdShortSrv(b.server),gp:`${i.gph}× ${cdShortGpu(CATALOG.gpus.find(x=>x.id===i.gpu))}`}; };
   function cdNew(){ const o={el:[],ln:[],nLines:0,nShapes:0,w:0,h:0,minY:Infinity};
     o.rect=(x,y,w,h,st,fill,sw,dash,rx)=>{ o.nShapes++; o.el.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${rx??5}" fill="${fill||"var(--card)"}" stroke="${st}" stroke-width="${sw||1.4}"${dash?` stroke-dasharray="${dash}"`:""}/>`); o.w=Math.max(o.w,x+w); o.h=Math.max(o.h,y+h); o.minY=Math.min(o.minY,y); };
     o.text=(x,y,t,sz,col,anchor,bold)=>o.el.push(`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}"${anchor?` text-anchor="${anchor}"`:""} fill="${col||"var(--fg)"}" font-size="${sz||9}"${bold?' font-weight="700"':""}>${cdEsc(String(t))}</text>`);
-    o.box=(x,y,w,h,st,l1,l2,c2)=>{ o.rect(x,y,w,h,st); o.text(x+w/2,y+(l2?h/2-1:h/2+3.5),l1,9.5,"var(--fg)","middle",true); if(l2) o.text(x+w/2,y+h/2+10,l2,8,c2||"var(--muted)","middle"); };
+    /* l1 name (bold) · m model (muted, optional) · l2 detail (coloured) */
+    o.box=(x,y,w,h,st,l1,l2,c2,m)=>{ o.rect(x,y,w,h,st);
+      if(m){ o.text(x+w/2,y+h/2-(l2?7:1),l1,9.5,"var(--fg)","middle",true); o.text(x+w/2,y+h/2+(l2?4:10),m,7.6,"var(--muted)","middle"); if(l2) o.text(x+w/2,y+h/2+14,l2,7.8,c2||"var(--muted)","middle"); return; }
+      o.text(x+w/2,y+(l2?h/2-1:h/2+3.5),l1,9.5,"var(--fg)","middle",true); if(l2) o.text(x+w/2,y+h/2+10,l2,8,c2||"var(--muted)","middle"); };
     o.frame=(x,y,w,h,label,st,dash,sub)=>{ o.rect(x,y,w,h,st,"none",1.2,dash||"6 4",10); o.text(x+8,y+13,label,10,st,null,true); if(sub) o.text(x+w-8,y+13,sub,8.5,"var(--muted)","end"); };
     o.line=(x1,y1,x2,y2,c,sw,dash)=>{ o.nLines++; o.ln.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${c}" stroke-width="${sw||1}" opacity="0.75"${dash?` stroke-dasharray="${dash}"`:""}/>`); };
     o.badge=(x,y,t,c)=>{ const w=8+String(t).length*5.2; o.el.push(`<rect x="${(x-w/2).toFixed(1)}" y="${(y-6.5).toFixed(1)}" width="${w.toFixed(1)}" height="13" rx="6.5" fill="var(--card)" stroke="${c}" stroke-width="0.9"/><text x="${x.toFixed(1)}" y="${(y+3).toFixed(1)}" text-anchor="middle" fill="${c}" font-size="8" font-weight="700">${cdEsc(String(t))}</text>`); };
@@ -4474,7 +4488,7 @@ const Exporter = {
         o.rect(x,y0,w,h,"var(--fg)","var(--bg)",1.1,"4 3",8); o.text(x+6,y0+10,`SU ${s.su.toLocaleString()}${s.gl?` · ${s.gl}`:""}`,8.5,"var(--fg)",null,true);
         const hostsXY={};
         for(let k=0;k<n;k++){ const c=k%cols, r=Math.floor(k/cols), hx=x+CD.suPad+c*(CD.hw+CD.hg), hy=y0+CD.suHead+r*(CD.hh+CD.hg);
-          o.box(hx,hy,CD.hw,CD.hh,"var(--fg)",`host ${(s.h0+k).toLocaleString()}`); hostsXY[s.h0+k]=[hx+CD.hw/2,hy]; }
+          const hd=cdHostDesc(b,s.g); o.box(hx,hy,CD.hw,CD.hh,"var(--fg)",`host ${(s.h0+k).toLocaleString()}`,hd.gp,"var(--rail1)",hd.m); hostsXY[s.h0+k]=[hx+CD.hw/2,hy]; }
         out.sus.push({...s,x0:x,x1:x+w,cx:x+w/2,y0,y1:y0+h,hosts:hostsXY}); x+=w+CD.suGap;
       }
       out.blocks.push({...bk,x0:bx0,x1:x-CD.suGap});
@@ -4507,7 +4521,7 @@ const Exporter = {
     }
     if(spec.type==="flat"){
       const S=spec.S, y=yAt(150)-(dir<0?CD.swH:0), span=Math.max(S*(CD.swW+14),W-X0-200), sx0=(X0+W)/2-span/2, step=span/S;   /* spines spread over the whole leaf row */
-      const sp=[]; for(let s=1;s<=S;s++){ const x=sx0+step*(s-0.5); sp.push(x); o.box(x-CD.swW/2,y,CD.swW,CD.swH,"var(--muted)",`${P}spine ${s}`,spec.sub?spec.sub(s):""); }
+      const sp=[]; for(let s=1;s<=S;s++){ const x=sx0+step*(s-0.5); sp.push(x); o.box(x-CD.swW/2,y,CD.swW,CD.swH,"var(--muted)",`${P}spine ${s}`,spec.sub?spec.sub(s):"",null,spec.name); }
       o.frame(sx0-12,y-20,span+24,CD.swH+28,`${P}spine tier — ${S}× ${spec.name}`,"var(--muted)","6 4",spec.note||"");
       const total=leaves.length*S, lbl=total<=1500;
       if(total<=CD.budget) for(const l of leaves) for(let s=0;s<S;s++){ const k=spec.k(l); if(!k) continue; o.line(l.x,l.yUp,sp[s],edge(y,CD.swH),lnC,0.8); if(lbl) o.badge(l.x+(sp[s]-l.x)*0.2,l.yUp+(edge(y,CD.swH)-l.yUp)*0.2,`×${k}`,lnC); }
@@ -4519,7 +4533,7 @@ const Exporter = {
       const span=Math.max(RP*(gw+30),W-X0), step=span/RP, gx0=(X0+W)/2-span/2; const spX={};
       for(let g=1;g<=RP;g++){ const cx=gx0+step*(g-0.5), fx=cx-gw/2;
         o.frame(fx,y-22,gw,CD.swH+30,`${P}SG-${g}`,"var(--muted)","6 4",spec.gsub?spec.gsub(g):"");
-        spX[g]=[]; for(let j=1;j<=sg;j++){ const x=fx+12+(j-1)*(CD.swW+8)+CD.swW/2; spX[g].push(x); o.box(x-CD.swW/2,y,CD.swW,CD.swH,"var(--muted)",`${P}spine ${((g-1)*sg+j).toLocaleString()}`,`SG-${g} #${j}`); } }
+        spX[g]=[]; for(let j=1;j<=sg;j++){ const x=fx+12+(j-1)*(CD.swW+8)+CD.swW/2; spX[g].push(x); o.box(x-CD.swW/2,y,CD.swW,CD.swH,"var(--muted)",`${P}spine ${((g-1)*sg+j).toLocaleString()}`,`SG-${g} #${j}`,null,spec.name); } }
       const total=leaves.reduce((a,l)=>a+l.ports.length*sg,0), each=total<=CD.budget, lbl=total<=1200;
       for(const l of leaves) for(const g of l.ports){ const k=spec.k(l); const c=railC4[(g-1)%4];
         if(each) spX[g].forEach(x=>{ o.line(l.x,l.yUp,x,edge(y,CD.swH),c,0.7); if(lbl) o.badge(l.x+(x-l.x)*0.22,l.yUp+(edge(y,CD.swH)-l.yUp)*0.22,`×${k}`,c); });
@@ -4534,7 +4548,7 @@ const Exporter = {
         for(let j=1;j<=Sp;j++){ const x=x0+10+step*(j-0.5), bw=Math.max(14,Math.min(CD.swW,step-4)); podSp[p].push(x);
           o.box(x-bw/2,yPS,bw,CD.swH,"var(--muted)",bw>=80?`${P}pod ${p} spine ${j}`:bw>=34?`spine ${j}`:`${j}`,bw>=80?"":bw>=34?`pod ${p}`:""); }
         const fy0=Math.min(yPS,...ls.map(l=>l.yBox0))-26, fy1=Math.max(yPS+CD.swH,...ls.map(l=>l.yBox1))+10;
-        o.frame(x0,fy0,x1-x0,fy1-fy0,`${P}POD ${p}`,"var(--rail3)","8 5",`${ls.length} leaves · ${Sp} pod spines`);
+        o.frame(x0,fy0,x1-x0,fy1-fy0,`${P}POD ${p}`,"var(--rail3)","8 5",`${ls.length} leaves · ${Sp} pod spines${spec.name?` (${spec.name})`:""}`);
         const tot=ls.length*Sp, each=tot<=Math.min(4000,CD.budget/Math.max(1,pods.length));
         for(const l of ls){ if(each) podSp[p].forEach(x=>o.line(l.x,l.yUp,x,edge(yPS,CD.swH),"var(--rail1)",0.5)); else o.line(l.x,l.yUp,(x0+x1)/2,edge(yPS,CD.swH)+(dir<0?14:-14),"var(--rail1)",0.5); }
         if(!each) o.text((x0+x1)/2,dir<0?yPS+CD.swH+26:yPS-18,`every leaf → every pod spine ×${pi.k}`,8.5,"var(--rail1)","middle",true);
@@ -4545,8 +4559,8 @@ const Exporter = {
       const shown=cdPick(U,collapse), span=Math.max(shown.length*(gw+26),X1-XA), step=span/shown.length, cx0=(XA+X1)/2-span/2; const gX={};
       shown.forEach((q,k)=>{ const cx=cx0+step*(k+0.5);
         if(q.gap){ o.frame(cx-gw/2,yC-22,gw,CD.swH+30,`core groups ${q.gap[0]}–${q.gap[1]}`,"var(--muted)","2 4","identical"); return; }
-        o.frame(cx-gw/2,yC-22,gw,CD.swH+30,`${P}CORE GROUP ${q.i}`,"var(--rail3)","8 5",`${G} switches`); gX[q.i]=cx;
-        const ns=Math.min(G,12); for(let j=1;j<=ns;j++){ const w=CD.swW*0.7, x=cx-gw/2+10+(j-1)*(w+6); o.box(x,yC,w,CD.swH,"var(--rail3)",j===ns&&G>ns?`core ${G}`:`core ${j}`); if(j===ns-1&&G>ns) o.text(x+w+3,yC+CD.swH/2+3,"",8); } });
+        o.frame(cx-gw/2,yC-22,gw,CD.swH+30,`${P}CORE GROUP ${q.i}`,"var(--rail3)","8 5",`${G}× ${spec.coreName||spec.name||"switch"}`); gX[q.i]=cx;
+        const ns=Math.min(G,12); for(let j=1;j<=ns;j++){ const w=CD.swW*0.7, x=cx-gw/2+10+(j-1)*(w+6); o.box(x,yC,w,CD.swH,"var(--rail3)",j===ns&&G>ns?`core ${G}`:`core ${j}`,"",null,spec.coreName||spec.name||""); if(j===ns-1&&G>ns) o.text(x+w+3,yC+CD.swH/2+3,"",8); } });
       /* pod spine j → core groups j·U/Sp … (k groups each) — one bundle per (pod spine, group) */
       for(const p of pods){ const pi=f.podInfo[p-1]||f.podInfo[0], per=U/pi.Sp;
         podSp[p].forEach((x,j)=>{ for(let q=j*per+1;q<=(j+1)*per;q++) if(gX[q]!=null) o.line(x,face(yPS,CD.swH),gX[q],edge(yC,CD.swH)+(dir<0?8:-8),"var(--rail3)",0.7); }); }
@@ -4569,7 +4583,7 @@ const Exporter = {
         const bsus=H.sus.filter(s=>bk.sus.some(t=>t.su===s.su)), x0=bk.x0, x1=bk.x1, step=(x1-x0)/lpb;
         for(let r=0;r<lpb;r++){
           const li=(bk.blk-1)*lpb+r+1, x=x0+step*(r+0.5), lw=Math.min(CD.leafW,step-8), L=DleafRails(b,r), col=railC4[r%4];
-          o.box(x-lw/2,yLeaf,lw,CD.leafH,col,`${pl?pl+"-":""}leaf ${li.toLocaleString()}`,DleafLbl(b,r),col);
+          o.box(x-lw/2,yLeaf,lw,CD.leafH,col,`${pl?pl+"-":""}leaf ${li.toLocaleString()}`,DleafLbl(b,r),col,sw);
           const yUp=dir<0?yLeaf:yLeaf+CD.leafH, yDn=dir<0?yLeaf+CD.leafH:yLeaf;
           leaves.push({x,yUp,yMid:yLeaf+CD.leafH/2,yBox0:yLeaf,yBox1:yLeaf+CD.leafH,li,blk:bk.blk,r,ports:L.ports,pod:ew.tier===3&&ew.fold?Math.ceil(bk.blk/ew.fold.bpp):0});
           /* every host of every SU in the block → this leaf (its rails / ports): one link per SU bundle, labeled */
@@ -4584,8 +4598,8 @@ const Exporter = {
       const yRef=dir<0?yLeaf:yLeaf+CD.leafH;
       let spec;
       if(ew.rtx) spec={type:"pair",isl:ew.linksSS};
-      else if(ew.tier===3&&ew.fold&&ew.fold.ok) spec={type:"fold",fold:ew.fold};
-      else if(ew.regime==="sg"&&ew.sg&&ew.proto!=="ib") spec={type:"sg",RP:ew.railsPerPlane,size:ew.sg.size,k:l=>l.blk===ew.blocks?(ew.sg.kLast||ew.sg.k):ew.sg.k,gsub:g=>`${ew.sg.size} spines`};
+      else if(ew.tier===3&&ew.fold&&ew.fold.ok) spec={type:"fold",fold:ew.fold,name:swS,coreName:swS};
+      else if(ew.regime==="sg"&&ew.sg&&ew.proto!=="ib") spec={type:"sg",name:swS,RP:ew.railsPerPlane,size:ew.sg.size,k:l=>l.blk===ew.blocks?(ew.sg.kLast||ew.sg.k):ew.sg.k,gsub:g=>`${ew.sg.size} spines`};
       else { const st=ew.stripe; spec={type:"flat",S:ew.spine/P,name:swS,k:l=>{ if(!st) return 1; const last=l.blk===ew.blocks; const g=last?st.groups[st.groups.length-1]:st.groups[0]; return g.k; },note:ew.des?"DES: every leaf → every spine":ovsTxt(b,1)}; }
       cdAbove(o,b,leaves,spec,dir,yRef,pl,collapse);
       if(pl) o.text(12,yLeaf+CD.leafH/2+5,`PLANE ${pl}`,13,pl==="A"?"var(--rail1)":"var(--rail3)",null,true);
@@ -4599,7 +4613,7 @@ const Exporter = {
     const yH=900, H=cdHosts(o,b,40,yH,list), yLeaf=yH-140-CD.leafH;
     const X0=40, X1=H.x, step=(X1-X0)/lay.L, leaves=[];
     lay.leaves.forEach((lf,k)=>{ const x=X0+step*(k+0.5), col=railC4[k%4];
-      o.box(x-Math.min(CD.leafW,step-8)/2,yLeaf,Math.min(CD.leafW,step-8),CD.leafH,col,`leaf ${lf.leaf}`,`${lf.down} host cages · ${lf.up} up`,col);
+      o.box(x-Math.min(CD.leafW,step-8)/2,yLeaf,Math.min(CD.leafW,step-8),CD.leafH,col,`leaf ${lf.leaf}`,`${lf.down} host cages · ${lf.up} up`,col,b.ewLeafName||b.ewSwitch.id);
       leaves.push({x,yUp:yLeaf,yMid:yLeaf+CD.leafH/2,blk:1,li:lf.leaf,ports:[],k:lf.k});
       for(const u of lf.units){ const ss=H.sus.filter(s=>s.g===u.g&&s.h1>=u.h0&&s.h0<=u.h1);
         for(const s of ss){ const nh=Math.min(s.h1,u.h1)-Math.max(s.h0,u.h0)+1; cdLink(o,s.cx,s.y0,x,yLeaf+CD.leafH,col,nh*u.legs,H.sus.length*lay.L<=3000); } } });
@@ -4612,7 +4626,7 @@ const Exporter = {
     const o=cdNew(), ns=b.ns, lay=ns.layout, i=b.input, su=suDef(b), sw=b.nsSwitch.id;
     if(ns.merged||!lay){ /* RA consolidation: N-S rides the E-W leaves */
       const {list}=cdEwBlocks(b,collapse); const H=cdHosts(o,b,40,700,list), yL=700-120-CD.leafH;
-      for(const bk of H.blocks){ if(bk.gap) continue; const x=(bk.x0+bk.x1)/2; o.box(x-90,yL,180,CD.leafH,"var(--ok)",`E-W leaves of block ${bk.blk}`,"N-S VLAN (converged, RA)","var(--ok)");
+      for(const bk of H.blocks){ if(bk.gap) continue; const x=(bk.x0+bk.x1)/2; o.box(x-90,yL,180,CD.leafH,"var(--ok)",`E-W leaves of block ${bk.blk}`,"N-S VLAN (converged, RA)","var(--ok)",b.ewLeafName||b.ewSwitch.id);
         for(const s of H.sus.filter(s=>bk.sus.some(t=>t.su===s.su))) cdLink(o,s.cx,s.y0,x,yL+CD.leafH,"var(--ok)",(s.h1-s.h0+1)*(ns.nsPortsPerNode||2),H.sus.length<=3000); }
       if(storage){ o.box(40,yL-170,Math.max(300,H.x-80),40,"var(--warn)","Storage arrays","far-end optics per storage-vendor matrix (UNVALIDATED)","var(--warn)"); for(const bk of H.blocks.filter(x=>!x.gap)) o.line((bk.x0+bk.x1)/2,yL,40+Math.max(300,H.x-80)/2,yL-130,"var(--warn)",1); }
       return cdWrap(o,b,storage?"st":"ns",`${storage?"Storage (converged)":"North-South"} — merged into the E-W leaves (RA, ≤4 SUs) · ${i.nodes} hosts`,collapse);
@@ -4625,7 +4639,7 @@ const Exporter = {
     for(const bk of H.blocks){ if(bk.gap){ o.frame(bk.x0,yLeaf-6,bk.x1-bk.x0,CD.leafH+12,`leaves of ${bk.label}`,"var(--muted)","2 4","identical"); continue; }
       const p=pairs[bk.pair-1], x0=bk.x0, x1=bk.x1, ls=p.leaves.map(n=>lay.leaves[n-1]);
       ls.forEach((lf,k)=>{ const x=x0+(x1-x0)*(k+0.5)/ls.length, lw=Math.min(CD.leafW+20,(x1-x0)/ls.length-10);
-        o.box(x-lw/2,yLeaf,lw,CD.leafH,"var(--ok)",`N-S leaf ${lf.leaf}`,`node ${lf.node} · stor ${lf.stor} · cust ${lf.cust}`,"var(--ok)");
+        o.box(x-lw/2,yLeaf,lw,CD.leafH,"var(--ok)",`N-S leaf ${lf.leaf}`,`node ${lf.node} · stor ${lf.stor} · cust ${lf.cust}`,"var(--ok)",sw);
         leaves.push({x,yUp:yLeaf,yMid:yLeaf+CD.leafH/2,yBox0:yLeaf,yBox1:yLeaf+CD.leafH,li:lf.leaf,blk:1,ports:[],pod:lf.pod||0,k:lf.perSpine});
         for(const s of H.sus.filter(s=>bk.sus.some(t=>t.h0===s.h0&&t.g===s.g))){
           /* dual-homed: ⌈pn/2⌉ ports to the A leaf, ⌊pn/2⌋ to B; single-homed hosts alternate A / B (engine nsLayout) */
@@ -4636,7 +4650,7 @@ const Exporter = {
       o.frame(x0-8,yLeaf-22,x1-x0+16,yH+H.h+10-(yLeaf-22),`PAIR ${p.pair}`,"var(--ok)","6 4",`${p.sus.reduce((a,x)=>a+x.n,0)} hosts dual-homed`);
     }
     if(ns.spine>0){
-      if(ns.sspine>0&&ns.nsFold) cdAbove(o,b,leaves,{type:"fold",fold:ns.nsFold},-1,yLeaf,null,collapse);
+      if(ns.sspine>0&&ns.nsFold) cdAbove(o,b,leaves,{type:"fold",fold:ns.nsFold,name:sw,coreName:sw},-1,yLeaf,null,collapse);
       else cdAbove(o,b,leaves,{type:"flat",S:ns.spine,name:sw,k:l=>l.k||1,note:"1:1 northbound"},-1,yLeaf,null,collapse);
     }
     if(storage){ const top=(isFinite(o.minY)?o.minY:0)-120, w=Math.max(400,H.x-80); o.box(40,top,w,40,"var(--warn)","Storage arrays",`${ns.pStor.toLocaleString()}×800G storage ports on the N-S leaves (converged, RA) · far-end optics per storage-vendor matrix`,"var(--warn)");
@@ -4656,7 +4670,7 @@ const Exporter = {
     const stn=CATALOG.nics.find(x=>x.id===i.stnic)||{ports:1}, totP=(i.stnicn||0)*(stn.ports||1);
     for(const [pl,dir] of [["A",-1],["B",1]]){ const pp=pl==="A"?Math.ceil(totP/2):Math.floor(totP/2); const yL=dir<0?yH-120-CD.leafH:yH+H.h+120, leaves=[];
       for(const bk of H.blocks){ if(bk.gap) continue; const x=(bk.x0+bk.x1)/2, li=(bk.blk-1)*2+(pl==="A"?1:2);
-        o.box(x-70,yL,140,CD.leafH,"var(--warn)",`${pl}-storage leaf ${li}`,"RoCE lossless","var(--warn)"); leaves.push({x,yUp:dir<0?yL:yL+CD.leafH,yMid:yL+CD.leafH/2,blk:1,li,ports:[],k:1});
+        o.box(x-75,yL,150,CD.leafH,"var(--warn)",`${pl}-storage leaf ${li}`,"RoCE lossless","var(--warn)",b.nsSwitch.id); leaves.push({x,yUp:dir<0?yL:yL+CD.leafH,yMid:yL+CD.leafH/2,blk:1,li,ports:[],k:1});
         for(const s of H.sus.filter(s=>bk.sus.some(t=>t.su===s.su))) cdLink(o,s.cx,dir<0?s.y0:s.y1,x,dir<0?yL+CD.leafH:yL,"var(--warn)",(s.h1-s.h0+1)*pp,H.sus.length<=3000); }
       if(S>0) cdAbove(o,b,leaves,{type:"flat",S:Math.max(1,Math.floor(S/2)),name:b.nsSwitch.id,k:()=>1,note:"UNVALIDATED"},dir,dir<0?yL:yL+CD.leafH,pl,collapse);
       o.text(12,yL+CD.leafH/2+5,`PLANE ${pl}`,13,"var(--warn)",null,true); }
@@ -4673,7 +4687,7 @@ const Exporter = {
     const sx=[];
     for(const bk of H.blocks){ if(bk.gap){ o.frame(bk.x0,yS-6,bk.x1-bk.x0,CD.swH+12,bk.label,"var(--muted)","2 4","identical"); continue; }
       const x=(bk.x0+bk.x1)/2, sd=lay.switches[bk.blk-1]; sx.push(x);
-      o.box(x-60,yS,120,CD.swH,"var(--muted)",`${sw} ${sd.sw}`,`${sd.ports}/${lay.ports} ports · ${sd.up} up`);
+      o.box(x-66,yS,132,CD.swH,"var(--muted)",`${sw} ${sd.sw}`,`${sd.ports}/${lay.ports} ports · ${sd.up} up`,null,"OOB management switch");
       for(const s of H.sus.filter(s=>bk.sus.some(t=>t.h0===s.h0&&t.g===s.g))){ const e=sd.hosts.find(h=>h.g===s.g&&h.h0<=s.h0&&h.h1>=s.h0)||{ppn:1}; cdLink(o,s.cx,s.y0,x,yS+CD.swH,"var(--muted)",(s.h1-s.h0+1)*e.ppn,H.sus.length<=3000,"3 3"); }
       o.frame(bk.x0-8,yS-20,bk.x1-bk.x0+16,yH+H.h+10-(yS-20),`OOB DOMAIN ${sd.sw}`,"var(--muted)","6 4",""); }
     const yC=yS-170, w=Math.max(400,H.x-80); o.box(40,yC,w,40,"var(--muted)","Core / aggregation (customer management network)",`${oob.up100.toLocaleString()} uplinks · 25/100G aggregation per RA`);
@@ -5157,8 +5171,8 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
     const i=bom.input,p=bom.ew.proof,S=CATALOG.sources;
     const tN=bom.totalNodes||i.nodes, tG=bom.totalGpus||i.nodes*i.gph;
     const groups={};
-    for(const l of bom.lines){(groups[l.fabric]??=[]).push(l);}
-    if(bom.future) for(const l of bom.future.futureOnly){(groups[l.fabric]??=[]).push({...l,futureOnly:true,fQty:l.qty,fSpares:l.spares??null});}
+    for(const l of netLines(bom.lines)){(groups[l.fabric]??=[]).push(l);}
+    if(bom.future) for(const l of netLines(bom.future.futureOnly)){(groups[l.fabric]??=[]).push({...l,futureOnly:true,fQty:l.qty,fSpares:l.spares??null});}
     const unCount=bom.lines.filter(l=>l.status==="UNVALIDATED").length+bom.flags.length;
     const csv=Exporter.csv(bom), summary=Exporter.summary(bom);
 
@@ -5218,7 +5232,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         <div class="legend"><span><i style="background:var(--rail1)"></i>E-W rails</span><span><i style="background:var(--ok)"></i>N-S</span><span><i style="background:var(--warn)"></i>storage</span><span><i style="background:transparent;border-top:2px dashed var(--muted);height:0"></i>OOB (dotted)</span></div>
       </div></div>
 
-      <div class="card"><header><h2>Bill of materials</h2>
+      <div class="card"><header><h2>Bill of Materials (Networking)</h2>
         <div class="legend" style="margin-left:auto"><span><span class="st-ic ok" style="width:16px;height:16px;font-size:10px">✓</span> RA-validated</span><span><span class="st-ic ver" style="width:16px;height:16px;font-size:10px">✓</span> datasheet-verified</span><span><span class="st-ic un" style="width:16px;height:16px;font-size:10px">!</span> needs evidence</span></div>
       </header><div class="body" style="gap:4px">
         ${Object.entries(groups).map(([f,ls])=>`
@@ -5472,7 +5486,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="92";
+  const APP_BUILD="93";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
