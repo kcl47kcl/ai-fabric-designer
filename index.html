@@ -328,6 +328,9 @@ body.zv-open{overflow:hidden}
 .sy-steps{margin:6px 0 10px 18px;padding:0;font-size:13px}.sy-steps li{margin:4px 0}
 .cf .field input{font:inherit;width:100%;box-sizing:border-box;color:var(--fg);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 12px}
 .cf code{font-size:12px}
+.ghost svg rect,.ghost svg line,.ghost svg path,.ghost svg polyline,.ghost svg circle{stroke-dasharray:2 3}
+.ghost svg rect[stroke],.ghost svg line{stroke:var(--brand)}
+.ghost-note{font-size:12px;color:var(--brand);font-weight:600;padding:6px 12px;background:var(--brand-tint);border-radius:8px;margin:6px 0}
 </style>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
@@ -2503,7 +2506,7 @@ function buildBOM(input){
       if(m) delete map[lineKey(l)];
     }
     const futureOnly = f.lines.filter(l => map[lineKey(l)]);
-    bom.future = {nodes: input.growth, ew: f.ew, ns: f.ns, oob: f.oob, futureOnly};
+    bom.future = {nodes: input.growth, ew: f.ew, ns: f.ns, oob: f.oob, futureOnly, bom: f};
   }
   return bom;
 }
@@ -3277,6 +3280,9 @@ const Exporter = {
   /* growth legend: top-right corner of every overview that draws growth */
   const GLeg=b=>{ const f=Gf(b); return f?`<text x="${DW-8}" y="11" text-anchor="end" fill="var(--brand)" font-size="9.5" font-weight="600">dotted blue = added at the growth target (${f.nodes.toLocaleString()} hosts)</text>`:""; };
   const Grow=(total,fut,slots)=>fut>total?(fut<=slots?Dslot(fut,slots):DslotAt(fut,total,total+1)):Dslot(total,slots);
+  const GClk=(kind,label,inner,idx,pl)=>kind?`<g class="clk" data-growth="1" data-detail="${kind}"${idx!=null?` data-idx="${idx}"`:""}${pl?` data-plane="${pl}"`:""} tabindex="0" role="button" aria-label="Expand planned ${label}${pl?` (plane ${pl})`:""}">${inner}</g>`:inner;
+  /* dotted growth trunk beside a solid one: the links added at growth */
+  const Gtrunk=(y1,y2,lbl)=>`<g><title>added at the growth target</title>${[418,426].map(x=>`<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="var(--brand)" stroke-width="2" stroke-dasharray="2 3"/>`).join("")}${lbl?`<text x="408" y="${(y1+y2)/2+4}" text-anchor="end" fill="var(--brand)" font-size="9.5" font-weight="600">${lbl}</text>`:""}</g>`;
   const Dclk=(kind,label,inner,idx,pl)=>kind?`<g class="clk" data-detail="${kind}"${idx!=null?` data-idx="${idx}"`:""}${pl?` data-plane="${pl}"`:""} tabindex="0" role="button" aria-label="Expand ${label}${pl?` (plane ${pl})`:""}">${inner}</g>`:inner;
   const Dsvg=(H,aria,inner,cap1,cap2)=>`<svg viewBox="0 0 ${DW} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="${aria}">${inner}${cap1?`<text x="450" y="${H-(cap2?22:8)}" text-anchor="middle" fill="var(--muted)" font-size="10">${cap1}</text>`:""}${cap2?`<text x="450" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${cap2}</text>`:""}</svg>`;
   const Dband=(y,title,sub,stroke,kind,label,dashed,idx)=>Dclk(kind,label||title,
@@ -3312,11 +3318,12 @@ const Exporter = {
     const G=grow>count?grow:0, row=G?Grow(count,G,8):Dslot(count,8), xsA=Dxs(row.length,88,14); let s="";
     const part=(nodes&&perSU)?nodes-(count-1)*perSU:0, partial=part>0&&part<perSU;
     row.forEach((o,k)=>{ if(o.ell){s+=Dell(xsA[k],y+20);return;}
-      if(G&&o.i>count){ s+=`<g><title>SU ${o.i} — added at the growth target</title>${GBox(xsA[k]-44,y,88,40)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--brand)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--brand)" font-size="9.5">growth</text></g>`; return; }
+      if(G&&o.i>count){ o.g=true; s+=GClk(kind,"scalable unit SU "+o.i,`<title>SU ${o.i} — planned at the growth target</title>${GBox(xsA[k]-44,y,88,40)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--brand)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--brand)" font-size="9.5">growth</text>`,o.i); return; }
       const pt=partial&&o.i===count;
       s+=Dclk(kind,"scalable unit SU "+o.i,`${Dbox(xsA[k]-44,y,88,40,"var(--fg)",pt)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${pt?`${part} of ${perSU} hosts`:sub}</text>`,o.i);});
     return {svg:s,xs:xsA,row};};
   const DrowLinks=(xsA,row,yTop,yBand,color,dash)=>{let s="";row.forEach((o,k)=>{if(o.ell)return;
+    if(o.g){ s+=`<line x1="${xsA[k]}" y1="${yTop}" x2="450" y2="${yBand}" stroke="var(--brand)" stroke-width="1.4" stroke-dasharray="2 3"/>`; return; }
     s+=`<line x1="${xsA[k]}" y1="${yTop}" x2="450" y2="${yBand}" stroke="${color}" stroke-width="1.3" opacity="0.8"${dash?' stroke-dasharray="3 4"':''}/>`;});return s;};
   /* Slot row that GUARANTEES the given indices are among the real slots (first, …, needed…, last). */
   const DslotAt=(total,...need)=>{
@@ -3346,7 +3353,7 @@ const Exporter = {
     row.forEach((o,k)=>{
       const bx=G?bxAt(k):xs0+k*(bwi+gap), bcx=bx+(o.ell?bwi*ew_:bwi)/2, by=y+22, bh=34;
       if(o.ell){ s+=G?`<line x1="${bcx-Math.min(24,bwi*ew_/2-2)}" y1="${by+bh/2}" x2="${bcx+Math.min(24,bwi*ew_/2-2)}" y2="${by+bh/2}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`:Dell(bcx,by+bh/2); return; }
-      if(G&&o.i>total){ s+=`<g><title>${pl?pl+"-":""}${name} ${o.i} — added at the growth target</title>${GBox(bx,by,bwi,bh)}<text x="${bcx}" y="${by+14}" text-anchor="middle" fill="var(--brand)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text><text x="${bcx}" y="${by+27}" text-anchor="middle" fill="var(--brand)" font-size="9">growth</text></g>`; return; }
+      if(G&&o.i>total){ s+=GClk(kind,`${name} ${o.i}`,`<title>${pl?pl+"-":""}${name} ${o.i} — planned at the growth target</title>${GBox(bx,by,bwi,bh)}<text x="${bcx}" y="${by+14}" text-anchor="middle" fill="var(--brand)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text><text x="${bcx}" y="${by+27}" text-anchor="middle" fill="var(--brand)" font-size="9">growth</text>`,o.i,pl); return; }
       const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-(G?4:6))/(G?5:5.4))), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
       if(pairIsl&&k===1){ const x1=bx-gap, yy=by+bh/2, c=isl.c||stroke;
         s+=`<g><title>ISL ${name} ${row[0].i} ↔ ${name} ${o.i}: ${isl.n} × ${isl.sp||800}G</title><line x1="${x1}" y1="${yy}" x2="${bx}" y2="${yy}" stroke="${c}" stroke-width="3"/><text x="${x1+gap/2}" y="${yy-6}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9">ISL</text><rect x="${x1+gap/2-22}" y="${yy+1}" width="44" height="14" rx="7" fill="var(--card)" stroke="${c}" stroke-width="1.1"/><text x="${x1+gap/2}" y="${yy+11.5}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9.5">×${isl.n}</text></g>`; }
@@ -3385,6 +3392,7 @@ const Exporter = {
     }
     for(const c of cols) s+=trunk(c.cx,y,y+24);
     s+=`<text x="${cols[0].cx+14}" y="${y+16}" fill="var(--muted)" font-size="9">${Math.ceil((ew.links800??ew.links400)/2).toLocaleString()}×${ew.ssLinkG}G/plane</text>`;
+    if(fe&&!gStruct&&(fe.links800??fe.links400)>(ew.links800??ew.links400)) for(const c of cols) s+=`<g><title>added at the growth target</title>${[c.cx-22,c.cx-30].map(x=>`<line x1="${x}" y1="${y}" x2="${x}" y2="${y+24}" stroke="var(--brand)" stroke-width="2" stroke-dasharray="2 3"/>`).join("")}<text x="${c.cx-38}" y="${y+16}" text-anchor="end" fill="var(--brand)" font-size="9" font-weight="600">${c.pl===cols[0].pl?"":`+${Math.ceil(((fe.links800??fe.links400)-(ew.links800??ew.links400))/2).toLocaleString()}/plane at growth`}</text></g>`;
     y+=24;
     for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${Engine.isRailOpt(b.input.ewnicn,b.input.gph)?`rails 1–${b.input.gph}`:"host ports"} · plane ${c.pl}`,c.pl,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1)),null,(fe&&(fe.planes||1)===2)?fe.leaf/2:0).svg;
     if(isIB){
@@ -3400,8 +3408,9 @@ const Exporter = {
     s=gTop+frames+s;
     const suY=y+46, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n,GsuC(b));
     r.row.forEach((o,k)=>{ if(o.ell) return;
-      s+=`<line x1="${r.xs[k]-6}" y1="${suY}" x2="${cols[0].cx}" y2="${y+10}" stroke="${cols[0].col}" stroke-width="1.3" opacity="0.8"/>`
-        +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${cols[1].col}" stroke-width="1.3" opacity="0.8"/>`;});
+      const da=o.g?' stroke-dasharray="2 3"':'';
+      s+=`<line x1="${r.xs[k]-6}" y1="${suY}" x2="${cols[0].cx}" y2="${y+10}" stroke="${o.g?"var(--brand)":cols[0].col}" stroke-width="1.3" opacity="0.8"${da}/>`
+        +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${o.g?"var(--brand)":cols[1].col}" stroke-width="1.3" opacity="0.8"${da}/>`;});
     s+=r.svg;
     return Dsvg(suY+76,"E-W dual-plane fabric overview",GLeg(b)+s,
       `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: ${DrailsSpan(b)} into plane A + the same into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · ${ovsTxt(b,1)} per plane${isIB?" · NDR IB":""}`,
@@ -3433,7 +3442,8 @@ const Exporter = {
               :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${ew.sg?ew.sg.size:Math.ceil(ew.blocks/4)}`:ew.des?`DES fabric · every leaf → every spine (${ew.ssLinkG}G each)`:`flat 2-tier · ${ovsTxt(b,1)}`),
           null,null,null,(fe&&!gStruct)?fe.spine/P:0).svg;
       }
-      y+=66; s+=Dtrunk(y,y+26,`${(ew.links800??ew.links400).toLocaleString()}×${ew.ssLinkG}G leaf↔spine`); y+=26;
+      { const lk=ew.links800??ew.links400, fl=fe&&!gStruct?(fe.links800??fe.links400):0;
+        y+=66; s+=Dtrunk(y,y+26,`${lk.toLocaleString()}×${ew.ssLinkG}G leaf↔spine`)+(fl>lk?Gtrunk(y,y+26,`+${(fl-lk).toLocaleString()} at growth`):""); y+=26; }
     }
     s+=Dtier(450,760,y, rtx?`Leaf pair (collapsed) — 2× ${sw} · ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`Leaf switch tier — ${ew.leaf.toLocaleString()}× ${sw}`,
       rtx?2:ew.leaf/ew.planes,"leaf","leafblock","var(--rail1)",
@@ -3911,7 +3921,8 @@ const Exporter = {
       const spDown=si=>lay?NspineLeaves(lay,ns,si).reduce((a,l)=>a+l.perSpine,0):0;
       s+=Dtier(450,760,y,`N-S ${ns.sspine?"pod spine":"spine switch"} tier — ${ns.spine.toLocaleString()}× ${sw}${ns.sspine?` · ${ns.nsFold.pods} pods`:""}`,ns.spine,"spine",K("nsspine"),"var(--ok)",
         lay?`${lay.leaves[0].perSpine} uplink(s) from every leaf${ns.sspine?" of its pod":""}`:"1:1 northbound",null,lay?(si=>`${spDown(si)}/${ns.R||64} down`):null,null,gG(ns.spine,fn?fn.spine:0)).svg;
-      y+=66; s+=Dtrunk(y,y+22,lay?`${lay.leaves.reduce((a,l)=>a+l.up,0).toLocaleString()}×800G leaf↔spine`:""); y+=22; }
+      { const lk=lay?lay.leaves.reduce((a,l)=>a+l.up,0):0, fl=(fn&&!gStruct&&!fn.merged&&fn.layout)?fn.layout.leaves.reduce((a,l)=>a+l.up,0):0;
+        y+=66; s+=Dtrunk(y,y+22,lay?`${lk.toLocaleString()}×800G leaf↔spine`:"")+(fl>lk?Gtrunk(y,y+22,`+${(fl-lk).toLocaleString()} at growth`):""); y+=22; } }
     let leafBot;
     if(ns.merged||!lay){
       s+=Dband(y,`Converged N-S — merged into the E-W leaves`,`no separate N-S switches at this scale (RA ≤4 SUs) · VLAN-isolated`,"var(--ok)",K("nsleaf"),"N-S leaf allocation",true);
@@ -4032,7 +4043,7 @@ const Exporter = {
   function oobOvAll(b,live){
     const oob=b.oob, lay=Olay(b), K=k=>live?k:null, i=b.input; let s="", y=16; const f=b.mixed?null:Gf(b);
     s+=Dband(y,"Core / aggregation (customer network)",`${oob.up100.toLocaleString()} uplinks total (${lay?lay.switches[0].up:2} per switch) · scale with a 25/100G aggregation layer per RA`,"var(--muted)",K("oobcore"),"OOB aggregation");
-    y+=46; s+=Dtrunk(y,y+22,`${oob.up100.toLocaleString()} uplinks`); y+=22;
+    y+=46; s+=Dtrunk(y,y+22,`${oob.up100.toLocaleString()} uplinks`)+(f&&f.oob&&f.oob.up100>oob.up100?Gtrunk(y,y+22,`+${(f.oob.up100-oob.up100).toLocaleString()} at growth`):""); y+=22;
     const t=Dtier(450,760,y,`OOB switch tier — ${oob.switches.toLocaleString()}× ${Osw(b)}`,oob.switches,Osw(b),K("oobsw"),"var(--muted)",`${lay?lay.ports:48}×${Ospd(b)} each · ${oob.cat6.toLocaleString()} mgmt ports in use`,null,
       lay?(m=>`${NhTxt(b,lay.switches[m-1].hosts)} · ${lay.switches[m-1].ports}/${lay.ports}`):null,null,f&&f.oob?f.oob.switches:0);
     s+=t.svg; y+=t.h; const swBot=y;
@@ -4454,7 +4465,7 @@ const Exporter = {
   }
 
   /* ---------- Topology state + wiring ---------- */
-  const TOPO={bom:null,fab:"ew",detail:null,idx:null,plane:null};
+  const TOPO={bom:null,fab:"ew",detail:null,idx:null,plane:null,growth:false};
   const TOPO_OV={ew:ewOv,ns:nsOv,st:stOv,oob:oobOv};
   function topoDetail(kind){
     const b=TOPO.bom;
@@ -4539,13 +4550,18 @@ const Exporter = {
     if(TOPO.bom.inc&&!TOPO.bom.inc[TOPO.fab]){ ov.innerHTML='<div class="note" style="padding:20px 0">Every fabric section is switched off — include at least one section to see its topology.</div>'; if(det)det.innerHTML=""; return; }
     ov.innerHTML=TOPO_OV[TOPO.fab](TOPO.bom);
     if(TOPO.detail){
+      /* a dotted growth box opens the PLANNED detail: drawn from the growth-state design, every box and link dotted */
+      const base=TOPO.bom, gB=TOPO.growth&&base.future&&base.future.bom?base.future.bom:null;
+      if(gB) TOPO.bom=gB;
+      try{
       const d=topoDetail(TOPO.detail), di=TOPO.idx||1, dpl=TOPO.plane;
-      const dt=d?(typeof d.t==="function"?d.t(di,dpl):d.t):"";
+      const dt=d?(gB?`PLANNED at growth (${base.future.nodes.toLocaleString()} hosts) — `:"")+(typeof d.t==="function"?d.t(di,dpl):d.t):"";
+      const gCls=gB?" ghost":"", gNote=gB?`<div class="ghost-note">Planned growth state — dotted = to be added. Today's design: ${base.input.nodes.toLocaleString()} hosts (solid boxes in the overview).</div>`:"";
       const phone=window.matchMedia("(max-width:980px)").matches;
       TOPO.narrow = phone && window.innerHeight>window.innerWidth;   /* portrait phone ⇒ stacked layouts where provided */
       if(d&&phone){
         det.innerHTML=`<div class="zv" role="dialog" aria-modal="true" aria-label="${dt}"><div class="zv-head"><div class="zv-title">⤢ ${dt}</div><button class="btn neutral small" id="dclose" type="button">Close</button></div>`
-          +`<div class="zv-stage" id="zv-stage"><div class="zv-canvas" id="zv-canvas">${d.f(TOPO.bom,di,dpl)}</div></div>`
+          +`${gNote}<div class="zv-stage${gCls}" id="zv-stage"><div class="zv-canvas" id="zv-canvas">${d.f(TOPO.bom,di,dpl)}</div></div>`
           +`<div class="zv-hint">Pinch or use + / − to zoom · drag to move · double-tap to zoom in</div>`
           +`<div class="zv-tools"><button type="button" id="zv-out" aria-label="Zoom out">−</button><button type="button" id="zv-fit" aria-label="Fit to screen" style="font-size:13px">Fit</button><button type="button" id="zv-in" aria-label="Zoom in">+</button></div></div>`;
         TOPO.narrow=false;   /* stacked layout only for this phone viewer — exports/overview stay full width */
@@ -4553,12 +4569,14 @@ const Exporter = {
         zoomViewer($("zv-stage"),$("zv-canvas"));
       } else {
         document.body.classList.remove("zv-open"); TOPO.narrow=false;
-        det.innerHTML=d?`<div class="detailpane"><div class="detailhead"><span>⤢ ${dt}</span><span class="spacer"></span><button class="btn neutral small" id="dclose" type="button">Close</button></div><div class="diag">${d.f(TOPO.bom,di,dpl)}</div></div>`:"";
+        det.innerHTML=d?`<div class="detailpane"><div class="detailhead"><span>⤢ ${dt}</span><span class="spacer"></span><button class="btn neutral small" id="dclose" type="button">Close</button></div>${gNote}<div class="diag${gCls}">${d.f(TOPO.bom,di,dpl)}</div></div>`:"";
       }
-      const c=$("dclose"); if(c) c.onclick=()=>{document.body.classList.remove("zv-open");TOPO.detail=null;TOPO.idx=null;TOPO.plane=null;renderTopo();};
+      const c=$("dclose"); if(c) c.onclick=()=>{document.body.classList.remove("zv-open");TOPO.detail=null;TOPO.idx=null;TOPO.plane=null;TOPO.growth=false;renderTopo();};
+      } finally { TOPO.bom=base; }
     } else { det.innerHTML=""; document.body.classList.remove("zv-open"); }
     [ov,det].forEach(c=>c&&c.querySelectorAll(".clk").forEach(g=>{
-      const open=()=>{TOPO.detail=g.dataset.detail;TOPO.idx=g.dataset.idx?+g.dataset.idx:null;TOPO.plane=g.dataset.plane||null;renderTopo();$("topo-detail").scrollIntoView({behavior:"smooth",block:"nearest"});};
+      /* growth boxes in the overview open the planned view; clicks inside a planned view stay in the growth state */
+      const open=()=>{TOPO.growth=g.dataset.growth==="1"||(c===det&&!!TOPO.growth);TOPO.detail=g.dataset.detail;TOPO.idx=g.dataset.idx?+g.dataset.idx:null;TOPO.plane=g.dataset.plane||null;renderTopo();$("topo-detail").scrollIntoView({behavior:"smooth",block:"nearest"});};
       g.addEventListener("click",open);
       g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open();}});
     }));
@@ -4905,13 +4923,13 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
       }catch(e){ toast("Excel export failed: "+e.message); }
     });
     /* topology tabs + overview */
-    TOPO.bom=bom; TOPO.fab=["ew","ns","st","oob"].find(f=>bom.inc[f])||"ew"; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null;
+    TOPO.bom=bom; TOPO.fab=["ew","ns","st","oob"].find(f=>bom.inc[f])||"ew"; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null; TOPO.growth=false;
     { const lb1=$("lucid-btn"); if(lb1) lb1.textContent=`Generate “${FABNAME[TOPO.fab]}” in Lucidchart`; }
     const tabs=$("fabtabs");
     tabs.addEventListener("click",e=>{
       const b2=e.target.closest("button"); if(!b2)return;
       [...tabs.children].forEach(x=>x.setAttribute("aria-pressed",x===b2?"true":"false"));
-      TOPO.fab=b2.dataset.f; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null; renderTopo();
+      TOPO.fab=b2.dataset.f; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null; TOPO.growth=false; renderTopo();
       const lb0=$("lucid-btn"); if(lb0) lb0.textContent=`Generate “${FABNAME[TOPO.fab]}” in Lucidchart`;
     });
     renderTopo();
@@ -5023,7 +5041,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="86";
+  const APP_BUILD="87";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
