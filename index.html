@@ -4587,12 +4587,20 @@ const Exporter = {
     ov.innerHTML=TOPO_OV[TOPO.fab](TOPO.bom);
     if(TOPO.detail){
       /* a dotted growth box opens the PLANNED detail: drawn from the growth-state design, every box and link dotted */
-      const base=TOPO.bom, gB=TOPO.growth&&base.future&&base.future.bom?base.future.bom:null;
+      /* With a growth target, EVERY detail (today's box or a growth box) is the same picture: the growth-state design, today's
+         equipment solid, what growth adds dotted, the clicked box highlighted. Only when growth changes this fabric's structure
+         (e.g. 2-tier → 3-tier) does a today's box open today's design, because its view type doesn't exist in the growth state. */
+      const base=TOPO.bom, fut=base.future&&base.future.bom?base.future.bom:null;
+      const sChg=f=>{ if(!fut) return true; const e=base.ew, fe=fut.ew, n=base.ns, fn=fut.ns;
+        if(f==="ew") return fe.tier!==e.tier||!!fe.rtx!==!!e.rtx||(fe.planes||1)!==(e.planes||1);
+        if(f==="ns"||f==="st") return !!fn.merged!==!!n.merged||(fn.spine>0)!==(n.spine>0)||(fn.sspine>0)!==(n.sspine>0)||(f==="st"&&fut.st.mode!==base.st.mode);
+        return false; };
+      const gB=fut&&(TOPO.growth||!sChg(TOPO.fab))?fut:null;
       if(gB) TOPO.bom=gB;
       try{
       const d=topoDetail(TOPO.detail), di=TOPO.idx||1, dpl=TOPO.plane;
-      const dt=d?(gB?`PLANNED at growth (${base.future.nodes.toLocaleString()} hosts) — `:"")+(typeof d.t==="function"?d.t(di,dpl):d.t):"";
-      const gCls=gB?" ghost":"", gNote=gB?`<div class="ghost-note">Planned growth state — dotted = to be added. Today's design: ${base.input.nodes.toLocaleString()} hosts (solid boxes in the overview).</div>`:"";
+      const dt=d?(typeof d.t==="function"?d.t(di,dpl):d.t)+(gB?` — today ${base.input.nodes.toLocaleString()} hosts + growth to ${base.future.nodes.toLocaleString()}`:""):"";
+      const gCls=gB?" ghost":"", gNote=gB?`<div class="ghost-note">Solid = today (${base.input.nodes.toLocaleString()} hosts) · dotted = added at growth (${base.future.nodes.toLocaleString()} hosts). Links are shown as cabled at the growth target.</div>`:"";
       const phone=window.matchMedia("(max-width:980px)").matches;
       TOPO.narrow = phone && window.innerHeight>window.innerWidth;   /* portrait phone ⇒ stacked layouts where provided */
       if(d&&phone){
@@ -5078,7 +5086,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="88";
+  const APP_BUILD="89";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
