@@ -3355,7 +3355,7 @@ const Exporter = {
       const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-(G?4:6))/(G?5:5.4))), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
       if(pairIsl&&k===1){ const x1=bx-gap, yy=by+bh/2, c=isl.c||stroke;
         s+=`<g><title>ISL ${name} ${row[0].i} ↔ ${name} ${o.i}: ${isl.n} × ${isl.sp||800}G</title><line x1="${x1}" y1="${yy}" x2="${bx}" y2="${yy}" stroke="${c}" stroke-width="3"/><text x="${x1+gap/2}" y="${yy-6}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9">ISL</text><rect x="${x1+gap/2-22}" y="${yy+1}" width="44" height="14" rx="7" fill="var(--card)" stroke="${c}" stroke-width="1.1"/><text x="${x1+gap/2}" y="${yy+11.5}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9.5">×${isl.n}</text></g>`; }
-      s+=Dclk(kind,`${name} ${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+(st?14:21)}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text>${st?`<text x="${bcx}" y="${by+27}" text-anchor="middle" fill="${stroke}" font-weight="600" font-size="9">${stt}</text>`:""}`,o.i,pl);
+      s+=Dclk(kind,`${name}${name.endsWith("-")?"":" "}${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+(st?14:21)}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name}${name.endsWith("-")?"":" "}${o.i.toLocaleString()}</text>${st?`<text x="${bcx}" y="${by+27}" text-anchor="middle" fill="${stroke}" font-weight="600" font-size="9">${stt}</text>`:""}`,o.i,pl);
     });
     return {svg:s,h:fh};
   };
@@ -3384,7 +3384,9 @@ const Exporter = {
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${swS}${(fe&&!gStruct&&fe.spine>ew.spine)?` → ${(fe.spine/2).toLocaleString()} at growth`:""}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · ${F3(b).full.down}↓/${F3(b).full.up}↑`,c.pl).svg;
       y+=66;
     } else {
-      for(const c of cols) s+=Dtier(c.cx,bw,y,`Spine tier — ${spp.toLocaleString()}× ${swS}`,spp,"spine","spine2t","var(--muted)",
+      if(ew.regime==="sg"&&ew.sg&&!isIB) for(const c of cols) s+=Dtier(c.cx,bw,y,`Spine tier — ${spp.toLocaleString()}× ${swS} · ${ew.railsPerPlane} SGs × ${ew.sg.size}`,ew.railsPerPlane,"SG-","sgroup","var(--muted)",
+        "rail SGs",c.pl,g=>`${ew.sg.size} spines`).svg;
+      else for(const c of cols) s+=Dtier(c.cx,bw,y,`Spine tier — ${spp.toLocaleString()}× ${swS}`,spp,"spine","spine2t","var(--muted)",
         isIB?(ew.beyond?"radix-checked":"SuperPOD row"):(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs`:"flat 2-tier"),c.pl,null,null,(fe&&!gStruct)?fe.spine/2:0).svg;
       y+=66;
     }
@@ -3434,6 +3436,13 @@ const Exporter = {
     if(!rtx){
       if(t3){
         s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${swS} total${fe?gT(ew.spine,fe.spine):""}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${F3(b).full.down}↓ pod / ${F3(b).full.up}↑ its group`).svg;
+      } else if(ew.regime==="sg"&&ew.sg&&!isIB){
+        /* more than one spine group: the tier shows SG-1 … SG-X (one per rail); each SG box expands to its spines + rail leaves */
+        const RP=ew.railsPerPlane, ri=DrailsInfo(b), pm=Engine.railMap(b.input.gph,RP);
+        const sgSub=g=>{ const pb=pm.find(x=>x.ports.includes(g)); return `${ew.sg.size} spines · ${ri.railOpt&&pb?Engine.railTxt(pb.rails):`port ${g}`}`; };
+        const fsg=fe&&!gStruct&&fe.regime==="sg"&&fe.sg&&fe.sg.size>ew.sg.size?` → ${fe.sg.size} at growth`:"";
+        s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${swS} in ${RP} spine groups × ${ew.sg.size}${fsg}`,RP,"SG-","sgroup","var(--muted)",
+          `rail-aligned spine groups · ${ovsTxt(b,1)}`,null,sgSub).svg;
       } else {
         s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${swS}`,ew.spine/ew.planes,"spine","spine2t","var(--muted)",
           isIB?(ew.xdr?(ew.published?`SuperPOD B300 XDR row (${ew.blocks} SU)`:"even-striped, between XDR rows"):ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
@@ -3533,6 +3542,34 @@ const Exporter = {
       isIB?`only the SUs cabled to this leaf are shown — rail-aligned per the SuperPOD pattern (this block's ${lpb} leaves serve ONLY ${suN===1?"this SU":`these ${suN} SUs`})${pln?` · hosts attach to planes A+B`:""}`
         :(pln?`plane ${pln==="A"?"B":"A"} has its own identical ${lpb} leaves for this block — no links between planes · hosts below attach to BOTH planes`
          :`${DrailsInfo(b).railOpt?"GPU-N of EVERY node lands on the leaf serving rail N":"not rail-optimized: host ports spread evenly"} · leaf: ${lu?`${Math.ceil(Math.min(ew.nodesPerBlock,b.input.nodes-(blk-1)*ew.nodesPerBlock)*2*ew.railSpeed/800)} cages down + ${lu.up} up (≥1:1, evenly striped)`:`${(ew.R||64)/2} cages down (${(ew.R||64)/2*ew.legsPerCage}×${ew.railSpeed}G host legs) + ${ew.rtx?`${ew.linksSS} ISL to its pair leaf`:"32 up"}`}`));
+  }
+  /* SPINE GROUP SG-g (rail-aligned spine groups): every spine of the group on top, the rail-g leaf of EVERY block below,
+     each leaf → every SG spine with its real link count; spines and leaves expand to their own views */
+  function sgroupSVG(b,g,pln){
+    const ew=b.ew; pln=ew.planes===2?(pln==="B"?"B":"A"):null;
+    if(ew.regime!=="sg"||!ew.sg) return spine2tSVG(b,g,pln);
+    const RP=ew.railsPerPlane, sg=ew.sg.size, sgk=ew.sg.k, kl=ew.sg.kLast||sgk, lpb=Math.max(1,ew.leavesPerBlock||1);
+    g=Math.max(1,Math.min(g||1,RP));
+    const ri=DrailsInfo(b), pb=Engine.railMap(b.input.gph,RP).find(x=>x.ports.includes(g))||{rails:[g],ports:[g]};
+    const rT=ri.railOpt?Engine.railTxt(pb.rails):`host port ${g}`;
+    let lr=0; for(let r=0;r<lpb;r++){ if(DleafRails(b,r).ports.includes(g)){ lr=r; break; } }   /* the leaf of each block that carries this rail */
+    const P=pln?pln+"-":"";
+    const tRow=Dslot(sg,6), tW=Daw(tRow.length,130,26), tXs=Dxs(tRow.length,tW,26), tY=46;
+    const bRow=Dslot(ew.blocks,5), bW=Daw(bRow.length,160,24), bXs=Dxs(bRow.length,bW,24), bY=210;
+    let s=""; const W=[];
+    for(const bb of bRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)) for(const t of tRow.map((o,k)=>({o,k})).filter(x=>!x.o.ell)){
+      const n=bb.o.i===ew.blocks?kl:sgk;
+      W.push({x1:bXs[bb.k],y1:bY,x2:tXs[t.k],y2:tY+44,c:"var(--rail1)",lab:`×${n}`,tt:`${P}leaf ${(bb.o.i-1)*lpb+lr+1} (block ${bb.o.i}, ${rT}) → ${P}SG-${g} spine ${t.o.i}: ${n} × 800G`}); }
+    tRow.forEach((o,k)=>{ if(o.ell){s+=Dell(tXs[k],tY+22);return;}
+      s+=Dclk("spine2t",`SG-${g} spine ${o.i}`,Dbox(tXs[k]-tW/2,tY,tW,44,"var(--muted)")+`<text x="${tXs[k]}" y="${tY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">${P}spine ${((g-1)*sg+o.i).toLocaleString()}</text><text x="${tXs[k]}" y="${tY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">SG-${g} #${o.i} · ${ew.blocks*sgk}/64 down</text>`,(g-1)*sg+o.i,pln); });
+    bRow.forEach((o,k)=>{ if(o.ell){s+=Dell(bXs[k],bY+23);return;}
+      const li=(o.i-1)*lpb+lr+1;
+      s+=Dclk("leafblock",`leaf ${li}`,Dbox(bXs[k]-bW/2,bY,bW,46,"var(--rail1)")+`<text x="${bXs[k]}" y="${bY+19}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10.5">${P}leaf ${li.toLocaleString()}</text><text x="${bXs[k]}" y="${bY+35}" text-anchor="middle" fill="var(--muted)" font-size="9.5">block ${o.i} · ${rT}</text>`,li,pln); });
+    s+=`<rect x="${Math.min(...tXs)-tW/2-14}" y="${tY-26}" width="${Math.max(...tXs)-Math.min(...tXs)+tW+28}" height="${44+40}" rx="10" fill="none" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="6 4"/><text x="${Math.min(...tXs)-tW/2-4}" y="${tY-12}" fill="var(--muted)" font-weight="700" font-size="10">SG-${g}${pln?` (plane ${pln})`:""} — ${sg} spines · ${rT}</text>`;
+    s+=Dwires(W);
+    return Dsvg(bY+46+58,`Spine group SG-${g}`,s,
+      `SG-${g} = the ${sg} spines serving ${rT}${pln?` in plane ${pln}`:""}: the ${rT} leaf of EVERY one of the ${ew.blocks} blocks sends ${sgk} up-cage(s) to each SG-${g} spine${kl!==sgk?` (last block ${kl})`:""}`,
+      `each SG spine: ${ew.blocks} rail leaves × ${sgk} = ${ew.blocks*sgk} of 64 down-cages · ${RP} spine groups${ew.planes===2?" per plane":""} · no links between spine groups · click a spine or leaf to expand it`);
   }
   function spine2tSVG(b,si,pln){
     const ew=b.ew;
@@ -4473,6 +4510,7 @@ const Exporter = {
       pod:{t:`Inside one pod — ${b.ew.podNodes} nodes per plane`,f:podSVG},
       podspine:{t:(i,p)=>`Pod spine ${i||1}${p?` (plane ${p})`:""} — inside its pod: leaves ↔ spines ↔ core groups`,f:podSpineSVG},
       spine2t:{t:(i,p)=>`Spine ${i||1}${p?` (plane ${p})`:""} — leaf↔spine spread`,f:spine2tSVG},
+      sgroup:{t:(i,p)=>`Spine group SG-${i||1}${p?` (plane ${p})`:""} — its spines and rail leaves`,f:sgroupSVG},
       coregroup:{t:(i,p)=>`Inside core group ${i||1}${p?` (plane ${p})`:""} — spine #${i||1} of every pod ↔ its core switches`,f:coreGroupSVG},
       podcore:{t:"Pod spines ↔ core groups — every link, with link counts",f:podCoreSVG},
       nsleaf:{t:i=>b.ns.merged?"Converged N-S allocation (merged into E-W leaves)":`N-S leaf ${i||1} — pair, links & port allocation`,f:nsLeafSVG},
@@ -4547,10 +4585,12 @@ const Exporter = {
      links between today's equipment stay solid. Works on the rendered SVG (any detail view). */
   function ghostGrowth(root,base,fab){
     const P=base.ew.planes||1, cur={leaf:fab==="ns"?base.ns.leaf:base.ew.leaf/P, spine:fab==="ns"?base.ns.spine:base.ew.spine/P,
-      su:suDef(base).c, oob:base.oob.switches, node:base.input.nodes};
+      su:suDef(base).c, oob:base.oob.switches, node:base.input.nodes, sg:base.ew.sg?base.ew.sg.size:0};
     const oobName=String(Osw(base)).toLowerCase();
     const isG=t=>{ t=String(t||""); let m;
       const n=x=>+String(x).replace(/,/g,"");
+      /* spine groups: a spine is identified by its member number within its SG (SG-g #j / SG-g spine j) */
+      if((m=t.match(/SG-\d+ (?:#|spine )([\d,]+)/))) return cur.sg>0&&n(m[1])>cur.sg;
       if((m=t.match(/(?:^|[^\w-])(?:[AB]-)?leaf ([\d,]+)/i))&&n(m[1])>cur.leaf) return true;
       if((m=t.match(/(?:^|[^\w-])(?:[AB]-)?spine #?([\d,]+)/i))&&n(m[1])>cur.spine) return true;
       if((m=t.match(/\bSU ([\d,]+)/))&&n(m[1])>cur.su) return true;
@@ -4565,7 +4605,7 @@ const Exporter = {
         if(b.width<36||b.height<18||b.width>420) continue;                        /* skip badges and tier frames */
         const inside=texts.filter(x=>x.b.x+x.b.width/2>=b.x&&x.b.x+x.b.width/2<=b.x+b.width&&x.b.y+x.b.height/2>=b.y&&x.b.y+x.b.height/2<=b.y+b.height);
         if(!inside.length||inside.length>4) continue;
-        const g=isG(inside[0].s); boxes.push({r,b,g});
+        const all=inside.map(x=>x.s).join(" · "), g=/SG-\d+ (?:#|spine )\d/.test(all)?isG(all):isG(inside[0].s); boxes.push({r,b,g});
         if(g){ dot(r); inside.forEach(x=>x.t.setAttribute("fill","var(--brand)")); } }
       const near=(x,y)=>boxes.find(o=>o.g&&x>=o.b.x-6&&x<=o.b.x+o.b.width+6&&y>=o.b.y-6&&y<=o.b.y+o.b.height+6);
       const glines=[];
@@ -5086,7 +5126,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="89";
+  const APP_BUILD="90";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
