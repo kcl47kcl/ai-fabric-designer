@@ -3266,6 +3266,17 @@ const Exporter = {
   const Dxs=(m,bw,gap,cx=DW/2)=>{const x0=cx-(m*bw+(m-1)*gap)/2;return Array.from({length:m},(_,k)=>x0+k*(bw+gap)+bw/2);};
   const Dell=(cx,cy)=>`<line x1="${cx-24}" y1="${cy}" x2="${cx+24}" y2="${cy}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`;
   const Dbox=(x,y,w,h,st,da)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="var(--card)" stroke="${st}" stroke-width="1.6"${da?' stroke-dasharray="4 4"':''}/>`;
+  /* GROWTH (growth target set): everything added between today and the growth target is drawn as DOTTED,
+     non-clickable boxes labeled "growth" — today's switches/SUs stay solid. Gf = the engine's growth-state sizing. */
+  const Gf=b=>(b&&b.future&&!b.mixed&&b.future.ew)?b.future:null;
+  const GBox=(x,y,w,h)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="var(--bg)" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="2 3"/>`;
+  const GsuC=b=>{ const f=Gf(b); return f?suDef({ew:f.ew,input:{nodes:f.nodes},oob:f.oob}).c:0; };
+  /* a whole tier/structure that only exists at growth (e.g. a spine tier added, 2-tier → 3-tier): one dotted band */
+  const Gband=(y,title,sub)=>`<g><title>${title} — at the growth target</title>${GBox(130,y,640,46)}<text x="450" y="${y+19}" text-anchor="middle" fill="var(--brand)" font-weight="700">${title}</text>${sub?`<text x="450" y="${y+35}" text-anchor="middle" fill="var(--brand)" font-size="10">${sub}</text>`:""}</g>`;
+  const Gcap=()=>"";
+  /* growth legend: top-right corner of every overview that draws growth */
+  const GLeg=b=>{ const f=Gf(b); return f?`<text x="${DW-8}" y="11" text-anchor="end" fill="var(--brand)" font-size="9.5" font-weight="600">dotted blue = added at the growth target (${f.nodes.toLocaleString()} hosts)</text>`:""; };
+  const Grow=(total,fut,slots)=>fut>total?(fut<=slots?Dslot(fut,slots):DslotAt(fut,total,total+1)):Dslot(total,slots);
   const Dclk=(kind,label,inner,idx,pl)=>kind?`<g class="clk" data-detail="${kind}"${idx!=null?` data-idx="${idx}"`:""}${pl?` data-plane="${pl}"`:""} tabindex="0" role="button" aria-label="Expand ${label}${pl?` (plane ${pl})`:""}">${inner}</g>`:inner;
   const Dsvg=(H,aria,inner,cap1,cap2)=>`<svg viewBox="0 0 ${DW} ${H}" width="100%" style="min-width:720px" font-family="var(--font)" font-size="11" role="img" aria-label="${aria}">${inner}${cap1?`<text x="450" y="${H-(cap2?22:8)}" text-anchor="middle" fill="var(--muted)" font-size="10">${cap1}</text>`:""}${cap2?`<text x="450" y="${H-8}" text-anchor="middle" fill="var(--muted)" font-size="10">${cap2}</text>`:""}</svg>`;
   const Dband=(y,title,sub,stroke,kind,label,dashed,idx)=>Dclk(kind,label||title,
@@ -3297,10 +3308,11 @@ const Exporter = {
     const lpb=b.ew.leavesPerBlock, last=li>lpb*(b.ew.blocks-1), g=last?st.groups[st.groups.length-1]:st.groups[0];
     return {up:g.k*st.S,k:g.k,S:st.S,spineDown:st.spineDown}; };
   /* SU row. nodes/perSU given ⇒ the trailing SU shows only the REAL host count ("n of N hosts", dashed frame). */
-  const DsuRow=(y,count,kind,sub,nodes,perSU)=>{
-    const row=Dslot(count,8), xsA=Dxs(row.length,88,14); let s="";
+  const DsuRow=(y,count,kind,sub,nodes,perSU,grow)=>{
+    const G=grow>count?grow:0, row=G?Grow(count,G,8):Dslot(count,8), xsA=Dxs(row.length,88,14); let s="";
     const part=(nodes&&perSU)?nodes-(count-1)*perSU:0, partial=part>0&&part<perSU;
     row.forEach((o,k)=>{ if(o.ell){s+=Dell(xsA[k],y+20);return;}
+      if(G&&o.i>count){ s+=`<g><title>SU ${o.i} — added at the growth target</title>${GBox(xsA[k]-44,y,88,40)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--brand)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--brand)" font-size="9.5">growth</text></g>`; return; }
       const pt=partial&&o.i===count;
       s+=Dclk(kind,"scalable unit SU "+o.i,`${Dbox(xsA[k]-44,y,88,40,"var(--fg)",pt)}<text x="${xsA[k]}" y="${y+17}" text-anchor="middle" fill="var(--fg)" font-weight="700">SU ${o.i.toLocaleString()}</text><text x="${xsA[k]}" y="${y+32}" text-anchor="middle" fill="var(--muted)" font-size="9.5">${pt?`${part} of ${perSU} hosts`:sub}</text>`,o.i);});
     return {svg:s,xs:xsA,row};};
@@ -3320,18 +3332,22 @@ const Exporter = {
      Returns {svg,h}. Every real box opens detail `kind` with its OWN index. */
   /* sub(i) (optional): a second line inside switch i — e.g. the GPU rails a leaf serves */
   /* isl (optional): {n, c} — the two switches of a pair are joined by an ISL bundle drawn between them with its link count */
-  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl,sub,isl)=>{
-    const fh=66, slots=w>=500?5:4, row=Dslot(total,slots), pairIsl=isl&&isl.n>0&&row.length===2&&!row.some(o=>o.ell), gap=pairIsl?96:8;
-    const bwi=(w-20-(row.length-1)*gap)/row.length, xs0=cx-w/2+10;
+  const Dtier=(cx,w,y,title,total,name,kind,stroke,extra,pl,sub,isl,grow)=>{
+    const G=grow>total?grow:0; if(G) title=`${title} · +${(G-total).toLocaleString()}${w>=500?" at growth":" growth"}`;
+    const fh=66, slots=w>=500?5:4, row=G?Grow(total,G,slots+1):Dslot(total,slots), pairIsl=!G&&isl&&isl.n>0&&row.length===2&&!row.some(o=>o.ell), gap=pairIsl?96:8;
+    /* growth rows hold more slots: an ellipsis takes ~0.4 of a box so the real boxes stay readable (non-growth rows unchanged) */
+    const ew_=G?0.4:1, nE=row.filter(o=>o.ell).length, bwi=(w-20-(row.length-1)*gap)/(row.length-nE+nE*ew_), xs0=cx-w/2+10;
+    const bxAt=k=>{ let x=xs0; for(let j=0;j<k;j++) x+=(row[j].ell?bwi*ew_:bwi)+gap; return x; };
     /* title never runs into the right-hand note: trimmed to the space left (long model names, narrow plane columns) */
     const tMax=Math.max(12,Math.floor((w-24-(extra?String(extra).length*5+12:0))/5.9)), tt=title.length>tMax?title.slice(0,tMax-1)+"…":title;
     let s=`<rect x="${cx-w/2}" y="${y}" width="${w}" height="${fh}" rx="8" fill="none" stroke="${stroke}" stroke-width="1.4"/>`
       +`<text x="${cx-w/2+10}" y="${y+14}" fill="var(--fg)" font-weight="700" font-size="10">${tt}</text>`
       +(extra?`<text x="${cx+w/2-10}" y="${y+14}" text-anchor="end" fill="var(--muted)" font-size="9">${extra}</text>`:"");
     row.forEach((o,k)=>{
-      const bx=xs0+k*(bwi+gap), bcx=bx+bwi/2, by=y+22, bh=34;
-      if(o.ell){ s+=Dell(bcx,by+bh/2); return; }
-      const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-6)/5.4)), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
+      const bx=G?bxAt(k):xs0+k*(bwi+gap), bcx=bx+(o.ell?bwi*ew_:bwi)/2, by=y+22, bh=34;
+      if(o.ell){ s+=G?`<line x1="${bcx-Math.min(24,bwi*ew_/2-2)}" y1="${by+bh/2}" x2="${bcx+Math.min(24,bwi*ew_/2-2)}" y2="${by+bh/2}" stroke="var(--muted)" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round"/>`:Dell(bcx,by+bh/2); return; }
+      if(G&&o.i>total){ s+=`<g><title>${pl?pl+"-":""}${name} ${o.i} — added at the growth target</title>${GBox(bx,by,bwi,bh)}<text x="${bcx}" y="${by+14}" text-anchor="middle" fill="var(--brand)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text><text x="${bcx}" y="${by+27}" text-anchor="middle" fill="var(--brand)" font-size="9">growth</text></g>`; return; }
+      const st=sub?sub(o.i):"", mx=Math.max(6,Math.floor((bwi-(G?4:6))/(G?5:5.4))), stt=st&&st.length>mx?st.slice(0,mx-1)+"…":st;
       if(pairIsl&&k===1){ const x1=bx-gap, yy=by+bh/2, c=isl.c||stroke;
         s+=`<g><title>ISL ${name} ${row[0].i} ↔ ${name} ${o.i}: ${isl.n} × ${isl.sp||800}G</title><line x1="${x1}" y1="${yy}" x2="${bx}" y2="${yy}" stroke="${c}" stroke-width="3"/><text x="${x1+gap/2}" y="${yy-6}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9">ISL</text><rect x="${x1+gap/2-22}" y="${yy+1}" width="44" height="14" rx="7" fill="var(--card)" stroke="${c}" stroke-width="1.1"/><text x="${x1+gap/2}" y="${yy+11.5}" text-anchor="middle" fill="${c}" font-weight="700" font-size="9.5">×${isl.n}</text></g>`; }
       s+=Dclk(kind,`${name} ${o.i}`,`${Dbox(bx,by,bwi,bh,stroke)}<text x="${bcx}" y="${by+(st?14:21)}" text-anchor="middle" fill="var(--fg)" font-weight="700" font-size="10">${pl?pl+"-":""}${name} ${o.i.toLocaleString()}</text>${st?`<text x="${bcx}" y="${by+27}" text-anchor="middle" fill="${stroke}" font-weight="600" font-size="9">${stt}</text>`:""}`,o.i,pl);
@@ -3347,24 +3363,30 @@ const Exporter = {
     const spp=ew.spine/2, lpp=ew.leaf/2, sspp=ew.sspine/2, bw=330;
     const cols=[{cx:235,label:"PLANE A",pl:"A",col:"var(--rail1)"},{cx:665,label:"PLANE B",pl:"B",col:"var(--rail3)"}];
     const trunk=(cx,y1,y2)=>[-8,0,8].map(o=>`<line x1="${cx+o}" y1="${y1}" x2="${cx+o}" y2="${y2}" stroke="var(--border)" stroke-width="2.2"/>`).join("");
-    let s="", y=40; const y0=y;
+    let s="", y=40; const y0=y, f=Gf(b), fe=f&&f.ew;
+    const gStruct=fe&&(fe.tier!==ew.tier||(fe.planes||1)!==2);
+    let gTop="";
+    if(gStruct) gTop=Gband(8,`At growth (${f.nodes.toLocaleString()} hosts): ${fe.tier===3?"3-tier fabric":"2-tier leaf-spine"}${(fe.planes||1)===2?" · per plane":""}`,
+      `${fe.leaf.toLocaleString()} leaf + ${fe.spine.toLocaleString()} spine${fe.sspine?` + ${fe.sspine.toLocaleString()} core`:""} in total — see the BOM growth column`);
+    if(gTop) y+=56;
+    const y0b=y;
     if(t3){
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Core — ${F3(b).U} groups × ${ew.coreGroupSize.toLocaleString()}× ${swS}`,F3(b).U,"Group","coregroup","var(--rail3)",`${sspp.toLocaleString()} sw this plane`,c.pl).svg;
       y+=66;
       for(const c of cols) s+=trunk(c.cx,y,y+26);
       s+=Dclk("podcore","spine-to-core-group map",`<rect x="282" y="${y+3}" width="336" height="20" rx="10" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="292" y="${y+17}" fill="var(--brand)" font-size="9.5" font-weight="700">▸ pod spines ↔ core groups · wiring (per plane)</text>`);
       y+=26;
-      for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${swS}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · ${F3(b).full.down}↓/${F3(b).full.up}↑`,c.pl).svg;
+      for(const c of cols) s+=Dtier(c.cx,bw,y,`Pod spines — ${spp.toLocaleString()}× ${swS}${(fe&&!gStruct&&fe.spine>ew.spine)?` → ${(fe.spine/2).toLocaleString()} at growth`:""}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${ew.pods} pod(s) · ${F3(b).full.down}↓/${F3(b).full.up}↑`,c.pl).svg;
       y+=66;
     } else {
       for(const c of cols) s+=Dtier(c.cx,bw,y,`Spine tier — ${spp.toLocaleString()}× ${swS}`,spp,"spine","spine2t","var(--muted)",
-        isIB?(ew.beyond?"radix-checked":"SuperPOD row"):(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs`:"flat 2-tier"),c.pl).svg;
+        isIB?(ew.beyond?"radix-checked":"SuperPOD row"):(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs`:"flat 2-tier"),c.pl,null,null,(fe&&!gStruct)?fe.spine/2:0).svg;
       y+=66;
     }
     for(const c of cols) s+=trunk(c.cx,y,y+24);
     s+=`<text x="${cols[0].cx+14}" y="${y+16}" fill="var(--muted)" font-size="9">${Math.ceil((ew.links800??ew.links400)/2).toLocaleString()}×${ew.ssLinkG}G/plane</text>`;
     y+=24;
-    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${Engine.isRailOpt(b.input.ewnicn,b.input.gph)?`rails 1–${b.input.gph}`:"host ports"} · plane ${c.pl}`,c.pl,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1))).svg;
+    for(const c of cols) s+=Dtier(c.cx,bw,y,`Leaf tier — ${lpp.toLocaleString()}× ${sw}`,lpp,"leaf","leafblock","var(--rail1)",`${Engine.isRailOpt(b.input.ewnicn,b.input.gph)?`rails 1–${b.input.gph}`:"host ports"} · plane ${c.pl}`,c.pl,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1)),null,(fe&&(fe.planes||1)===2)?fe.leaf/2:0).svg;
     if(isIB){
       s+=`<line x1="${cols[0].cx+bw/2}" y1="${y+33}" x2="414" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
         +`<line x1="486" y1="${y+33}" x2="${cols[1].cx-bw/2}" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.4" stroke-dasharray="3 3"/>`
@@ -3374,43 +3396,49 @@ const Exporter = {
     }
     y+=66;
     let frames="";
-    for(const c of cols) frames+=`<rect x="${c.cx-bw/2-12}" y="${y0-26}" width="${bw+24}" height="${y-y0+36}" rx="10" fill="none" stroke="${c.col}" stroke-width="1.4" stroke-dasharray="7 5" opacity="0.9"/><text x="${c.cx-bw/2-2}" y="${y0-12}" fill="${c.col}" font-weight="700" font-size="10" letter-spacing="1.5">${c.label}</text>`;
-    s=frames+s;
-    const suY=y+46, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n);
+    for(const c of cols) frames+=`<rect x="${c.cx-bw/2-12}" y="${y0b-26}" width="${bw+24}" height="${y-y0b+36}" rx="10" fill="none" stroke="${c.col}" stroke-width="1.4" stroke-dasharray="7 5" opacity="0.9"/><text x="${c.cx-bw/2-2}" y="${y0b-12}" fill="${c.col}" font-weight="700" font-size="10" letter-spacing="1.5">${c.label}</text>`;
+    s=gTop+frames+s;
+    const suY=y+46, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n,GsuC(b));
     r.row.forEach((o,k)=>{ if(o.ell) return;
       s+=`<line x1="${r.xs[k]-6}" y1="${suY}" x2="${cols[0].cx}" y2="${y+10}" stroke="${cols[0].col}" stroke-width="1.3" opacity="0.8"/>`
         +`<line x1="${r.xs[k]+6}" y1="${suY}" x2="${cols[1].cx}" y2="${y+10}" stroke="${cols[1].col}" stroke-width="1.3" opacity="0.8"/>`;});
     s+=r.svg;
-    return Dsvg(suY+76,"E-W dual-plane fabric overview",s,
+    return Dsvg(suY+76,"E-W dual-plane fabric overview",GLeg(b)+s,
       `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · each host: ${DrailsSpan(b)} into plane A + the same into plane B (${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G total) · ${ovsTxt(b,1)} per plane${isIB?" · NDR IB":""}`,
-      `two independent planes, NO plane↔plane links — every SU attaches to both · per plane: ${lpp.toLocaleString()} leaf + ${spp.toLocaleString()} spine${t3?` + ${sspp.toLocaleString()} core`:""}${isIB?" · subnet manager per plane":""}`);
+      `two independent planes, NO plane↔plane links — every SU attaches to both · per plane: ${lpp.toLocaleString()} leaf + ${spp.toLocaleString()} spine${t3?` + ${sspp.toLocaleString()} core`:""}${isIB?" · subnet manager per plane":""}${Gcap(b)}`);
   }
   function ewOv(b){
     if(b.mixed) return genMixedEwOv(b,true);
     const ew=b.ew, sw=b.ewLeafName||b.ewSwitch.id, swS=b.ewSpineName||sw, t3=ew.tier===3, rtx=!!ew.rtx, su=suDef(b);
     if(ew.planes===2 && !rtx) return ewOvDual(b);
     let s="", y=16;
-    const isIB=ew.proto==="ib";
+    const isIB=ew.proto==="ib", f=Gf(b), fe=f&&f.ew, P=ew.planes||1;
+    /* growth that changes the fabric's structure (collapsed pair → leaf/spine, 2-tier → 3-tier, plane count) is one dotted band */
+    const gStruct=fe&&(fe.tier!==ew.tier||!!fe.rtx!==rtx||(fe.planes||1)!==P);
+    if(gStruct){ s+=Gband(y,`At growth (${f.nodes.toLocaleString()} hosts): ${fe.tier===3?"3-tier fabric":fe.rtx?"collapsed leaf pair":"2-tier leaf-spine"}${(fe.planes||1)>1?` · ${fe.planes} planes`:""}`,
+        `${fe.leaf.toLocaleString()} leaf + ${fe.spine.toLocaleString()} spine${fe.sspine?` + ${fe.sspine.toLocaleString()} core`:""} in total — see the BOM growth column`); y+=56; }
+    const gT=(cur,fut)=>(fe&&!gStruct&&fut>cur)?` → ${fut.toLocaleString()} at growth`:"";
     if(t3){
-      s+=Dtier(450,760,y,`Super-spine tier — ${F3(b).U} core groups × ${ew.coreGroupSize.toLocaleString()}× ${swS}`,F3(b).U,"Group","coregroup","var(--rail3)",`${ew.sspine.toLocaleString()} switches total`).svg;
+      s+=Dtier(450,760,y,`Super-spine tier — ${F3(b).U} core groups × ${ew.coreGroupSize.toLocaleString()}× ${swS}`,F3(b).U,"Group","coregroup","var(--rail3)",`${ew.sspine.toLocaleString()} switches total${fe?gT(ew.sspine,fe.sspine):""}`).svg;
       y+=66; s+=Dtrunk(y,y+26);
       s+=Dclk("podcore","spine-to-core-group map",`<rect x="470" y="${y+2}" width="340" height="22" rx="11" fill="var(--brand-tint)" stroke="var(--brand)" stroke-width="1"/><text x="480" y="${y+17}" fill="var(--brand)" font-size="10" font-weight="700">▸ pod spines ↔ core groups · ${ew.linksSC.toLocaleString()}×${ew.ssLinkG}G wiring</text>`);
       y+=26;
     }
     if(!rtx){
       if(t3){
-        s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${swS} total`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${F3(b).full.down}↓ pod / ${F3(b).full.up}↑ its group`).svg;
+        s+=Dtier(450,760,y,`Pod spine tier (each of ${ew.pods} pod(s)) — ${ew.spine.toLocaleString()}× ${swS} total${fe?gT(ew.spine,fe.spine):""}`,F3(b).full.Sp,"spine","podspine","var(--muted)",`${F3(b).full.down}↓ pod / ${F3(b).full.up}↑ its group`).svg;
       } else {
         s+=Dtier(450,760,y,`Spine switch tier — ${ew.spine.toLocaleString()}× ${swS}`,ew.spine/ew.planes,"spine","spine2t","var(--muted)",
           isIB?(ew.xdr?(ew.published?`SuperPOD B300 XDR row (${ew.blocks} SU)`:"even-striped, between XDR rows"):ew.beyond?"flat 2-tier, radix-checked":`SuperPOD H100 row (${ew.blocks} SU)`)
-              :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${ew.sg?ew.sg.size:Math.ceil(ew.blocks/4)}`:ew.des?`DES fabric · every leaf → every spine (${ew.ssLinkG}G each)`:`flat 2-tier · ${ovsTxt(b,1)}`)).svg;
+              :(ew.regime==="sg"?`${ew.railsPerPlane} rail SGs × ${ew.sg?ew.sg.size:Math.ceil(ew.blocks/4)}`:ew.des?`DES fabric · every leaf → every spine (${ew.ssLinkG}G each)`:`flat 2-tier · ${ovsTxt(b,1)}`),
+          null,null,null,(fe&&!gStruct)?fe.spine/P:0).svg;
       }
       y+=66; s+=Dtrunk(y,y+26,`${(ew.links800??ew.links400).toLocaleString()}×${ew.ssLinkG}G leaf↔spine`); y+=26;
     }
     s+=Dtier(450,760,y, rtx?`Leaf pair (collapsed) — 2× ${sw} · ISL ${ew.linksSS.toLocaleString()}×800G (RTX PRO RA)`:`Leaf switch tier — ${ew.leaf.toLocaleString()}× ${sw}`,
       rtx?2:ew.leaf/ew.planes,"leaf","leafblock","var(--rail1)",
-      rtx?`${DrailsSpan(b)}`:`${ew.blocks.toLocaleString()} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`,null,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1)),
-      (rtx&&ew.linksSS>0)?{n:ew.linksSS,c:"var(--rail3)"}:null).svg;
+      rtx?`${DrailsSpan(b)}`:`${ew.blocks.toLocaleString()}${fe&&!rtx&&!fe.rtx&&(fe.planes||1)===P&&fe.blocks>ew.blocks?`→${fe.blocks.toLocaleString()}`:""} block(s) × ${ew.leavesPerBlock} · ${DrailsSpan(b)}`,null,li=>DleafLbl(b,(li-1)%Math.max(1,ew.leavesPerBlock||1)),
+      (rtx&&ew.linksSS>0)?{n:ew.linksSS,c:"var(--rail3)"}:null,(fe&&!rtx&&!fe.rtx&&(fe.planes||1)===P)?fe.leaf/P:0).svg;
     if(isIB){
       s+=`<line x1="830" y1="${y+33}" x2="840" y2="${y+33}" stroke="var(--rail3)" stroke-width="1.6"/>`
         +Dbox(840,y+10,56,46,"var(--rail3)",true)
@@ -3418,13 +3446,13 @@ const Exporter = {
         +`<text x="868" y="${y+45}" text-anchor="middle" fill="var(--muted)" font-size="7.5">${b.ew.xdr?"Q3400 FNM":b.input.nodes>2000?"QM9790 fleet":"node slot"}</text>`;
     }
     y+=66;
-    const suY=y+42, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n);
+    const suY=y+42, r=DsuRow(suY,su.c,"su",`${su.n} GPU hosts`,b.input.nodes,su.n,GsuC(b));
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--rail1)")+r.svg;
     const ri=DrailsInfo(b);
-    return Dsvg(suY+76,"E-W fabric overview",s,
+    return Dsvg(suY+76,"E-W fabric overview",GLeg(b)+s,
       `${(b.input.nodes*b.input.gph).toLocaleString()} GPUs · ${ew.hostLinks.toLocaleString()}×${ew.railSpeed}G host ports (${ri.txt}${ew.planes===2?", per plane":""}) · ${(b.ratio||1)>1?`${b.ratio}:1 oversubscribed at the leaf, 1:1 above`:"1:1 non-blocking at every tier"}${isIB?(b.ew.xdr?" · XDR InfiniBand":" · NDR InfiniBand"):""}`,
-      isIB?`SU boxes are GPU hosts · every outlined block expands · ${b.ew.xdr?"UFM 3.5 appliances on Q3400 FNM ports (Quantum-X800 SuperPOD RA)":`SM: ${b.input.nodes>2000?"UFM on externally managed QM9790 (>2,000 nodes)":"QM9700 onboard (≤2,000 nodes)"} — UFM attaches to the fabric per RA`}`
-          :"SU boxes are GPU hosts (endpoints); switches live in the tiers above — every outlined block expands");
+      (isIB?`SU boxes are GPU hosts · every outlined block expands · ${b.ew.xdr?"UFM 3.5 appliances on Q3400 FNM ports (Quantum-X800 SuperPOD RA)":`SM: ${b.input.nodes>2000?"UFM on externally managed QM9790 (>2,000 nodes)":"QM9700 onboard (≤2,000 nodes)"} — UFM attaches to the fabric per RA`}`
+          :"SU boxes are GPU hosts (endpoints); switches live in the tiers above — every outlined block expands")+Gcap(b));
   }
   function nsOv(b){ return nsOvAll(b,true); }
   function stOv(b){
@@ -3448,12 +3476,12 @@ const Exporter = {
         "var(--ok)","nsleaf","leaf tier",ns.merged);
       y+=46;
     }
-    const suY=y+42, r=DsuRow(suY,suDef(b).c,ded?"sust":"suns",`${suDef(b).n} GPU hosts`,b.input.nodes,suDef(b).n);
+    const suY=y+42, r=DsuRow(suY,suDef(b).c,ded?"sust":"suns",`${suDef(b).n} GPU hosts`,b.input.nodes,suDef(b).n,GsuC(b));
     s+=DrowLinks(r.xs,r.row,suY,y,"var(--warn)")+r.svg;
-    return Dsvg(suY+76,"Storage fabric overview",s,
+    return Dsvg(suY+76,"Storage fabric overview",GLeg(b)+s,
       ded?`requirement: ${gpus.toLocaleString()} GPUs × 12.5G = ${(gpus*12.5/1000).toFixed(1)} Tb/s on the dedicated fabric · N-S carries NO storage in this mode`
          :`requirement: ${gpus.toLocaleString()} GPUs × 12.5G = ${(gpus*12.5/1000).toFixed(1)} Tb/s · allocated ${ns.pStor.toLocaleString()}×800G = ${(ns.pStor*800/1000).toFixed(1)} Tb/s`,
-      "per-GPU storage bandwidth rule: ≥12.5 Gb/s (RA)");
+      "per-GPU storage bandwidth rule: ≥12.5 Gb/s (RA)"+Gcap(b));
   }
   function oobOv(b){ return oobOvAll(b,true); }
 
@@ -3872,11 +3900,17 @@ const Exporter = {
 
   function nsOvAll(b,live){
     const ns=b.ns, sw=b.nsSwitch.id, lay=Nlay(b), K=k=>live?k:null, i=b.input; let s="", y=16;
+    const f=b.mixed?null:Gf(b), fn=f&&f.ns;
+    /* growth adds a tier N-S doesn't have today (merged → dedicated, pair → spine tier, 2 → 3 tiers): one dotted band */
+    const gStruct=fn&&(!!fn.merged!==!!ns.merged||(fn.spine>0)!==(ns.spine>0)||(fn.sspine>0)!==(ns.sspine>0));
+    if(gStruct&&!fn.merged){ s+=Gband(y,`At growth (${f.nodes.toLocaleString()} hosts): ${ns.merged?"dedicated N-S fabric":fn.sspine?"3-tier N-S fabric":"N-S spine tier added"}`,
+        `${fn.leaf.toLocaleString()} leaf + ${fn.spine.toLocaleString()} spine${fn.sspine?` + ${fn.sspine.toLocaleString()} core`:""} in total — see the BOM growth column`); y+=56; }
+    const gG=(cur,fut)=>(fn&&!gStruct&&!fn.merged&&fut>cur)?fut:0;
     if(ns.sspine>0){ const f=ns.nsFold; s+=Dband(y,`N-S core tier — ${f.coreGroups} groups × ${f.coreGroupSize}× ${sw} = ${ns.sspine.toLocaleString()}`,`pod spine g ↔ core group g · ${f.coreDown}/${ns.R||64} ports per core switch`,"var(--ok)"); y+=46; s+=Dtrunk(y,y+22,`${(ns.linksSC||0).toLocaleString()}×800G spine↔core`); y+=22; }
     if(ns.spine>0){
       const spDown=si=>lay?NspineLeaves(lay,ns,si).reduce((a,l)=>a+l.perSpine,0):0;
       s+=Dtier(450,760,y,`N-S ${ns.sspine?"pod spine":"spine switch"} tier — ${ns.spine.toLocaleString()}× ${sw}${ns.sspine?` · ${ns.nsFold.pods} pods`:""}`,ns.spine,"spine",K("nsspine"),"var(--ok)",
-        lay?`${lay.leaves[0].perSpine} uplink(s) from every leaf${ns.sspine?" of its pod":""}`:"1:1 northbound",null,lay?(si=>`${spDown(si)}/${ns.R||64} down`):null).svg;
+        lay?`${lay.leaves[0].perSpine} uplink(s) from every leaf${ns.sspine?" of its pod":""}`:"1:1 northbound",null,lay?(si=>`${spDown(si)}/${ns.R||64} down`):null,null,gG(ns.spine,fn?fn.spine:0)).svg;
       y+=66; s+=Dtrunk(y,y+22,lay?`${lay.leaves.reduce((a,l)=>a+l.up,0).toLocaleString()}×800G leaf↔spine`:""); y+=22; }
     let leafBot;
     if(ns.merged||!lay){
@@ -3886,7 +3920,7 @@ const Exporter = {
       const t=Dtier(450,760,y,`N-S leaf switch tier — ${ns.leaf.toLocaleString()}× ${sw} (${lay.P} pair${lay.P>1?"s":""})`,ns.leaf,"leaf",K("nsleaf"),"var(--ok)",
         `${lay.leaves.some(l=>l.isl)?`leaf pair joined by ${lay.leaves[0].isl}×800G ISL · `:""}hosts ${(Ngrp(b,1).pn>=2)?"dual-homed":"single-homed"} to their pair`,null,
         li=>{ const l=lay.leaves[li-1]; return `pair ${l.pair} · ${NhTxt(b,lay.pairs[l.pair-1].hosts)}`; },
-        (!ns.spine&&lay.leaves[0].isl>0)?{n:lay.leaves[0].isl,c:"var(--ok)"}:null);
+        (!ns.spine&&lay.leaves[0].isl>0)?{n:lay.leaves[0].isl,c:"var(--ok)"}:null,gG(ns.leaf,fn?fn.leaf:0));
       s+=t.svg; y+=t.h; leafBot=y;
     }
     if(b.mixed){
@@ -3899,10 +3933,10 @@ const Exporter = {
       return Dsvg(suY+44+50,"Mixed-group shared N-S fabric",s,(ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis),
         "both host groups share the converged N-S fabric — every host dual-homes to its leaf pair · mixed attach flagged (no RA)");
     }
-    const suY=leafBot+42, r=DsuRow(suY,suDef(b).c,K("suns"),`${suDef(b).n} GPU hosts`,i.nodes,suDef(b).n);
+    const suY=leafBot+42, r=DsuRow(suY,suDef(b).c,K("suns"),`${suDef(b).n} GPU hosts`,i.nodes,suDef(b).n,GsuC(b));
     s+=DrowLinks(r.xs,r.row,suY,leafBot,"var(--ok)")+r.svg;
-    return Dsvg(suY+76,"North-South fabric overview",s,(ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis),
-      "every leaf box names its pair and the hosts it serves — expand any leaf, spine or SU for exact links and port allocation");
+    return Dsvg(suY+76,"North-South fabric overview",GLeg(b)+s,(ns.basis.length>140?ns.basis.slice(0,137)+"…":ns.basis),
+      "every leaf box names its pair and the hosts it serves — expand any leaf, spine or SU for exact links and port allocation"+Gcap(b));
   }
 
   function nsLeafSVG(b,li){
@@ -3996,11 +4030,11 @@ const Exporter = {
 
   /* ---- OOB ---- */
   function oobOvAll(b,live){
-    const oob=b.oob, lay=Olay(b), K=k=>live?k:null, i=b.input; let s="", y=16;
+    const oob=b.oob, lay=Olay(b), K=k=>live?k:null, i=b.input; let s="", y=16; const f=b.mixed?null:Gf(b);
     s+=Dband(y,"Core / aggregation (customer network)",`${oob.up100.toLocaleString()} uplinks total (${lay?lay.switches[0].up:2} per switch) · scale with a 25/100G aggregation layer per RA`,"var(--muted)",K("oobcore"),"OOB aggregation");
     y+=46; s+=Dtrunk(y,y+22,`${oob.up100.toLocaleString()} uplinks`); y+=22;
     const t=Dtier(450,760,y,`OOB switch tier — ${oob.switches.toLocaleString()}× ${Osw(b)}`,oob.switches,Osw(b),K("oobsw"),"var(--muted)",`${lay?lay.ports:48}×${Ospd(b)} each · ${oob.cat6.toLocaleString()} mgmt ports in use`,null,
-      lay?(m=>`${NhTxt(b,lay.switches[m-1].hosts)} · ${lay.switches[m-1].ports}/${lay.ports}`):null);
+      lay?(m=>`${NhTxt(b,lay.switches[m-1].hosts)} · ${lay.switches[m-1].ports}/${lay.ports}`):null,null,f&&f.oob?f.oob.switches:0);
     s+=t.svg; y+=t.h; const swBot=y;
     if(b.mixed){
       y+=12;
@@ -4010,9 +4044,9 @@ const Exporter = {
       s+=DrowLinks(r1.xs,r1.row,suY,swBot,"var(--rail2)",true)+DrowLinks(r2.xs,r2.row,suY,swBot,"var(--rail4)",true)+r1.svg+r2.svg;
       return Dsvg(suY+44+50,"Mixed-group OOB overview",s,oob.rule,"dotted = management · every host's BMC ports land on ONE switch · physically isolated");
     }
-    const suY=swBot+42, r=DsuRow(suY,suDef(b).c,K("suoob"),`${suDef(b).n} GPU hosts`,i.nodes,suDef(b).n);
+    const suY=swBot+42, r=DsuRow(suY,suDef(b).c,K("suoob"),`${suDef(b).n} GPU hosts`,i.nodes,suDef(b).n,GsuC(b));
     s+=DrowLinks(r.xs,r.row,suY,swBot,"var(--muted)",true)+r.svg;
-    return Dsvg(suY+76,"OOB management overview",s,oob.rule,`dotted = ${Ospd(b)} management: every BMC, SuperNIC/DPU BMC · each switch box names the hosts it serves`);
+    return Dsvg(suY+76,"OOB management overview",GLeg(b)+s,oob.rule,`dotted = ${Ospd(b)} management: every BMC, SuperNIC/DPU BMC · each switch box names the hosts it serves${Gcap(b)}`);
   }
   function oobSwSVG(b,m){
     const oob=b.oob, lay=Olay(b); if(!lay) return Dsvg(100,"OOB switch",`<text x="450" y="50" text-anchor="middle">no OOB layout</text>`,"","");
@@ -4989,7 +5023,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="85";
+  const APP_BUILD="86";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
