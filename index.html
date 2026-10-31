@@ -4498,7 +4498,36 @@ const Exporter = {
       }
     }
     const W=Math.ceil(vb[2]), H=Math.ceil(vb[3]);
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="app.diagrams.net" agent="AI Fabric Designer" version="24.7.17"><diagram id="aifd" name="${xe(String(title||"AI fabric").slice(0,90))}"><mxGraphModel dx="${W}" dy="${H}" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="${W}" pageHeight="${H}" background="#ffffff" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${out.join("")}</root></mxGraphModel></diagram></mxfile>\n`;
+    const model=`<mxGraphModel dx="${W}" dy="${H}" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="${W}" pageHeight="${H}" background="#ffffff" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${out.join("")}</root></mxGraphModel>`;
+    return drawioFile(model,title,null);
+  }
+  /* mxfile envelope exactly as draw.io writes it (no XML prolog). packed = draw.io's classic COMPRESSED page:
+     base64(deflate-raw(encodeURIComponent(<mxGraphModel…>))) as the <diagram> text — the form every draw.io importer
+     reads, Lucidchart's included (an importer that only reads the <diagram> text sees an UNcompressed page as empty). */
+  function drawioFile(model,title,packed){
+    const xa=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    const name=xa(String(title||"AI fabric").slice(0,90));
+    return `<mxfile host="app.diagrams.net" agent="AI Fabric Designer" version="24.7.17" type="device"${packed!=null?' compressed="true"':""}><diagram id="aifd-p1" name="${name}">${packed!=null?packed:model}</diagram></mxfile>\n`;
+  }
+  /* raw-DEFLATE using stored (uncompressed) blocks — valid input for any inflater; fallback when CompressionStream is absent */
+  function deflateStored(u8){
+    const n=Math.max(1,Math.ceil(u8.length/65535)), out=new Uint8Array(u8.length+n*5); let o=0;
+    for(let i=0;i<n;i++){ const a=i*65535, len=Math.min(65535,u8.length-a);
+      out[o++]=i===n-1?1:0; out[o++]=len&255; out[o++]=len>>8; out[o++]=~len&255; out[o++]=(~len>>8)&255;
+      out.set(u8.subarray(a,a+len),o); o+=len; }
+    return out.subarray(0,o);
+  }
+  async function drawioPack(model){
+    const enc=new TextEncoder().encode(encodeURIComponent(model)); let raw=null;
+    if(typeof CompressionStream==="function"){ try{ raw=new Uint8Array(await new Response(new Blob([enc]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer()); }catch(_){ raw=null; } }
+    if(!raw) raw=deflateStored(enc);
+    let bin=""; for(let i=0;i<raw.length;i+=0x8000) bin+=String.fromCharCode.apply(null,raw.subarray(i,i+0x8000));
+    return btoa(bin);
+  }
+  /* the compressed .drawio that the Lucid buttons save */
+  async function svgToDrawioPacked(svg,title){
+    const plain=svgToDrawio(svg,title), model=plain.slice(plain.indexOf("<mxGraphModel"),plain.lastIndexOf("</mxGraphModel>")+15);
+    return {packed:drawioFile(model,title,await drawioPack(model)),plain};
   }
   /* Lucidchart hand-off for the hosted app (no connector): save the .drawio, then open Lucid's documents page,
      where "+ New → Import" accepts draw.io files. Returns the Exporter result. */
@@ -4523,13 +4552,15 @@ const Exporter = {
         catch(e2){ toastFn&&toastFn("Lucid connector: "+((e2&&(e2.message||e2.code))||"unavailable")+" — saving a draw.io file for Lucid import instead"); } }
     }
     /* draw.io has no 256 KB cap: the most detailed candidate the caller offered (shape-count limits are the caller's) */
-    const xml=svgToDrawio(svgs[0],title), folded=!!firstFolded;
-    const res=await Exporter.save(`${title}${folded?" (folded)":""}.drawio`,new Blob([xml],{type:"application/xml"}));
-    return {mode:"drawio",res,folded};
+    const {packed,plain}=await svgToDrawioPacked(svgs[0],title), folded=!!firstFolded, base=`${title}${folded?" (folded)":""}`;
+    const res=await Exporter.save(`${base}.drawio`,new Blob([packed],{type:"application/xml"}));
+    let alt=null; try{ alt={url:URL.createObjectURL(new Blob([plain],{type:"application/xml"})),name:`${base} (uncompressed).drawio`}; }catch(_){}
+    return {mode:"drawio",res,folded,alt};
   }
   function lucidMsg(o,title){
     if(o.mode==="connector") return o.url?`Lucidchart: <a href="${o.url}" target="_blank" rel="noopener">open “${esc(title)}”</a>${o.folded?" (repeated units folded)":""}`:`Created “${esc(title)}” in Lucidchart — it's in your Lucid Documents`;
-    if(o.res==="saved"||o.res==="shared") return `Saved “${esc(title)}${o.folded?" (folded)":""}.drawio” · <a href="${LUCID_IMPORT_URL}" target="_blank" rel="noopener">open Lucidchart</a> → ${esc(LUCID_STEPS)}`;
+    if(o.res==="saved"||o.res==="shared") return `Saved “${esc(title)}${o.folded?" (folded)":""}.drawio” · <a href="${LUCID_IMPORT_URL}" target="_blank" rel="noopener">open Lucidchart</a> → ${esc(LUCID_STEPS)}`
+      +(o.alt?` · import shows an empty page? <a class="dio-alt" href="${o.alt.url}" download="${esc(o.alt.name)}">uncompressed copy</a>`:"");
     return o.res==="declined"?"Save declined":"Download unavailable in this view";
   }
   /* Lucid ignores <g transform>, so section offsets are baked into every y coordinate. */
@@ -5568,7 +5599,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="94";
+  const APP_BUILD="95";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
