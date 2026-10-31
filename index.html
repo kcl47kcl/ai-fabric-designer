@@ -332,9 +332,10 @@ body.zv-open{overflow:hidden}
 .cdv{position:fixed;inset:0;z-index:70;background:var(--bg);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 .cdv-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--card)}
 .cdv-head .spacer,.cdv-foot .spacer{flex:1}.cdv-t{color:var(--brand);font-size:14px}
-.cdv-tabs{min-width:0}.cdv-tabs button{padding:6px 12px}
+.cdv-dl{display:inline-flex;gap:6px;flex-wrap:wrap}
 .cdv-stage{flex:1;position:relative;overflow:hidden;touch-action:none;background:var(--card);cursor:grab;user-select:none;-webkit-user-select:none}
 .cdv-stage svg{display:block;width:100%;height:100%}
+#cdv-info{max-height:4.4em;overflow:auto;min-width:0;flex:1 1 0}
 .cdv-foot{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--card);font-size:12px;color:var(--muted)}
 .cdv-foot button{min-width:46px;min-height:38px;font:inherit;font-size:16px;font-weight:700;color:var(--brand);background:var(--bg);border:1px solid var(--border);border-radius:999px;cursor:pointer}
 </style>
@@ -4827,10 +4828,107 @@ const Exporter = {
   function cdWrap(o,b,fab,title,collapse){
     const pad=60, minY=(isFinite(o.minY)?o.minY:0)-130, W=Math.max(1200,o.w+pad), H=o.h-minY+pad;
     const head=`<text x="40" y="${(minY+50).toFixed(1)}" font-size="26" font-weight="700" fill="var(--fg)">${cdEsc(exName(b.input,fab))}</text>`
-      +`<text x="40" y="${(minY+78).toFixed(1)}" font-size="14" fill="var(--muted)">${cdEsc(title)}${collapse?" · repeated units folded for Lucid import":""}</text>`
+      +`<text x="40" y="${(minY+78).toFixed(1)}" font-size="14" fill="var(--muted)">${cdEsc(title)}${collapse?" · repeated units folded for export":""}</text>`
       +`<text x="40" y="${(minY+98).toFixed(1)}" font-size="11" fill="var(--muted)">Boundaries: dashed frames = SU · block · pair · pod · spine group · core group · plane. Link badges ×n = physical links. App build ${typeof APP_BUILD!=="undefined"?APP_BUILD:""} · catalog v${CATALOG.catalogVersion}</text>`;
     const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 ${minY.toFixed(1)} ${W.toFixed(1)} ${H.toFixed(1)}" width="${W.toFixed(0)}" height="${H.toFixed(0)}" font-family="var(--font)" font-size="9"><rect x="0" y="${minY.toFixed(1)}" width="${W.toFixed(1)}" height="${H.toFixed(1)}" fill="var(--card)"/>${head}${o.ln.join("")}${o.el.join("")}</svg>`;
     return {svg,w:W,h:H,lines:o.nLines,shapes:o.nShapes};
+  }
+  /* ---------- UNIFIED VIEW: every generated fabric's complete drawing stacked on one sheet (E-W, N-S, Storage, OOB).
+     Offsets are baked into the coordinates (no transforms) so SVG / PDF / PNG / draw.io all read it the same way. ---------- */
+  const TOPLBL={ew:"EW",ns:"NS",st:"Storage",oob:"OOB Management"};
+  function unifiedDiagram(b,opts={}){
+    const fabs=["ew","ns","st","oob"].filter(f=>b.inc[f]);
+    const parts=fabs.map(f=>({f,d:completeDiagram(f,b,opts)}));
+    const gap=90, top=150, W=Math.max(1200,...parts.map(p=>p.d.w));
+    let y=top, body="", shapes=0, lines=0; const secs=[];
+    for(const p of parts){
+      const y0=+(p.d.svg.match(/viewBox="0 (-?[\d.]+) /)||[0,0])[1];
+      const inner=p.d.svg.replace(/^<svg[^>]*>/,"").replace(/<\/svg>\s*$/,"");
+      if(secs.length) body+=`<line x1="20" y1="${(y-gap/2).toFixed(1)}" x2="${(W-20).toFixed(1)}" y2="${(y-gap/2).toFixed(1)}" stroke="var(--border)" stroke-width="2"/>`;
+      body+=shiftY(inner,y-y0); secs.push({f:p.f,y,h:p.d.h,w:p.d.w}); y+=p.d.h+gap; shapes+=p.d.shapes; lines+=p.d.lines; }
+    const H=y-gap+40;
+    const head=`<text x="40" y="58" font-size="30" font-weight="700" fill="var(--fg)">${cdEsc(exName(b.input,null))} — Unified network topology</text>`
+      +`<text x="40" y="90" font-size="15" fill="var(--muted)">${cdEsc(fabs.map(f=>TOPLBL[f]).join(" · "))} — every generated fabric on one sheet, each expanded to every device${opts.collapse?" · repeated units folded for export":""}</text>`
+      +`<text x="40" y="112" font-size="11" fill="var(--muted)">${b.input.nodes.toLocaleString()} GPU hosts${b.totalNodes&&b.totalNodes!==b.input.nodes?` (${b.totalNodes.toLocaleString()} incl. group 2)`:""} · app build ${typeof APP_BUILD!=="undefined"?APP_BUILD:""} · catalog v${CATALOG.catalogVersion}</text>`;
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}" width="${W.toFixed(0)}" height="${H.toFixed(0)}" font-family="var(--font)" font-size="9"><rect x="0" y="0" width="${W.toFixed(1)}" height="${H.toFixed(1)}" fill="var(--card)"/>${head}${body}</svg>`;
+    return {svg,w:W,h:H,shapes,lines,secs};
+  }
+  /* ---------- Vector PDF from a literal SVG drawing (rect / line / circle / polygon / text), no libraries.
+     One page sized to the drawing (scaled to ≤ 14,400 pt per side, the PDF page limit); Helvetica / Helvetica-Bold
+     (WinAnsi) with real glyph widths so centred and right-aligned labels land where the SVG puts them. ---------- */
+  const HELV=[278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+  const HELVB=[278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+  const WIN={"×":[0xD7,584,584],"·":[0xB7,278,278],"—":[0x97,1000,1000],"–":[0x96,556,556],"•":[0x95,350,350],"“":[0x93,333,500],"”":[0x94,333,500],"‘":[0x91,222,278],"’":[0x92,222,278],"…":[0x85,1000,1000],"°":[0xB0,400,400],"±":[0xB1,584,584],"µ":[0xB5,556,556],"é":[0xE9,556,556],"²":[0xB2,333,333],"³":[0xB3,333,333],"¼":[0xBC,834,834],"½":[0xBD,834,834]};
+  const WINSUB={"→":"->","←":"<-","↔":"<->","⇒":"=>","⇔":"<=>","≤":"<=","≥":">=","≈":"~","≠":"!=","−":"-","✓":"v","✗":"x","⌈":"","⌉":"","⌊":"","⌋":""," ":" "," ":" "," ":" "};
+  function pdfText(t,bold){ /* → {hex, width (1/1000 em)} */
+    let hex="", w=0;
+    for(const ch0 of String(t)){ const seq=WINSUB[ch0]!=null?WINSUB[ch0]:ch0;
+      for(const ch of seq){ const c=ch.codePointAt(0); let code, cw;
+        if(c>=32&&c<=126){ code=c; cw=(bold?HELVB:HELV)[c-32]; }
+        else if(WIN[ch]){ code=WIN[ch][0]; cw=WIN[ch][bold?2:1]; }
+        else { code=63; cw=bold?611:556; }
+        hex+=code.toString(16).padStart(2,"0"); w+=cw; } }
+    return {hex,w};
+  }
+  function svgPrims(svg){
+    const vb=((svg.slice(0,600).match(/viewBox="([^"]+)"/)||[0,"0 0 1000 1000"])[1]).split(/[\s,]+/).map(Number);
+    const body=svg.replace(/^[\s\S]*?<svg[^>]*>/,"").replace(/<\/svg>\s*$/,"").replace(/<title>[\s\S]*?<\/title>/g,"").replace(/<defs>[\s\S]*?<\/defs>/g,"")
+      .replace(/<(rect|line|circle|polygon)\b([^>]*?)>\s*<\/\1>/g,"<$1$2/>");
+    const items=[]; const re=/<(rect|line|circle|polygon|text)\b([^>]*?)(\/>|>([\s\S]*?)<\/text>)/g; let m;
+    while((m=re.exec(body))){ items.push({k:m[1],a:" "+m[2],txt:m[4]!=null?m[4].replace(/<[^>]+>/g," ").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,"&").replace(/\s+/g," ").trim():null}); }
+    return {vb,items};
+  }
+  function svgToPdfParts(svg){
+    const {vb,items}=svgPrims(svg);
+    const A=(t,k)=>{ const m=t.match(new RegExp(`\\s${k}="([^"]*)"`)); return m?m[1]:null; };
+    const N=(t,k,d=0)=>{ const v=A(t,k); return v==null||v===""||isNaN(+v)?d:+v; };
+    const rgb=(c,op)=>{ if(!c||c==="none") return null; let h=c.trim();
+      if(/^#[0-9a-f]{3}$/i.test(h)) h="#"+h.slice(1).split("").map(x=>x+x).join("");
+      const mm=h.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); const rr=mm?[1,2,3].map(i=>parseInt(mm[i],16)/255):h==="white"?[1,1,1]:[0,0,0];
+      const o=op==null?1:op; return rr.map(v=>(v*o+(1-o)).toFixed(3)).join(" "); };
+    const f=v=>(Math.round(v*100)/100).toString();
+    const W=vb[2], H=vb[3], sc=Math.min(1,14400/W,14400/H), PW=W*sc, PH=H*sc;
+    const out=[`q ${f(sc)} 0 0 ${f(-sc)} 0 ${f(PH)} cm 1 0 0 1 ${f(-vb[0])} ${f(-vb[1])} cm 1 j`];
+    const dash=a=>{ const d=A(a,"stroke-dasharray"); return d&&d!=="none"?`[${d.replace(/,/g," ")}] 0 d`:"[] 0 d"; };
+    const rrect=(x,y,w,h,r)=>{ r=Math.max(0,Math.min(r,w/2,h/2)); if(!r) return `${f(x)} ${f(y)} ${f(w)} ${f(h)} re`; const k=r*0.5523;
+      return `${f(x+r)} ${f(y)} m ${f(x+w-r)} ${f(y)} l ${f(x+w-r+k)} ${f(y)} ${f(x+w)} ${f(y+r-k)} ${f(x+w)} ${f(y+r)} c ${f(x+w)} ${f(y+h-r)} l ${f(x+w)} ${f(y+h-r+k)} ${f(x+w-r+k)} ${f(y+h)} ${f(x+w-r)} ${f(y+h)} c ${f(x+r)} ${f(y+h)} l ${f(x+r-k)} ${f(y+h)} ${f(x)} ${f(y+h-r+k)} ${f(x)} ${f(y+h-r)} c ${f(x)} ${f(y+r)} l ${f(x)} ${f(y+r-k)} ${f(x+r-k)} ${f(y)} ${f(x+r)} ${f(y)} c h`; };
+    const paint=(a,path)=>{ const op=N(a,"opacity",1), fc=rgb(A(a,"fill")??"#000",op*N(a,"fill-opacity",1)), stc=rgb(A(a,"stroke"),op*N(a,"stroke-opacity",1));
+      if(!fc&&!stc) return; let s2=""; if(fc) s2+=`${fc} rg `; if(stc) s2+=`${stc} RG ${f(N(a,"stroke-width",1))} w ${dash(a)} `;
+      out.push(s2+path+(fc&&stc?" B":fc?" f":" S")); };
+    for(const it of items){ const a=it.a;
+      if(it.k==="rect") paint(a,rrect(N(a,"x"),N(a,"y"),N(a,"width"),N(a,"height"),N(a,"rx")));
+      else if(it.k==="line"){ const stc=rgb(A(a,"stroke"),N(a,"opacity",1)*N(a,"stroke-opacity",1)); if(!stc) continue;
+        out.push(`${stc} RG ${f(N(a,"stroke-width",1))} w ${dash(a)} ${A(a,"stroke-linecap")==="round"?1:0} J ${f(N(a,"x1"))} ${f(N(a,"y1"))} m ${f(N(a,"x2"))} ${f(N(a,"y2"))} l S 0 J`); }
+      else if(it.k==="circle"){ const cx=N(a,"cx"),cy=N(a,"cy"),r=N(a,"r"); if(r>0) paint(a,rrect(cx-r,cy-r,2*r,2*r,r)); }
+      else if(it.k==="polygon"){ const p=(A(a,"points")||"").trim().split(/\s+/).map(q=>q.split(",").map(Number)).filter(q=>q.length===2&&q.every(isFinite)); if(p.length<2) continue;
+        paint(a,p.map((q,i)=>`${f(q[0])} ${f(q[1])} ${i?"l":"m"}`).join(" ")+" h"); }
+      else if(it.k==="text"&&it.txt){ const fs=N(a,"font-size",9), bold=/700|bold/.test(A(a,"font-weight")||""), t=pdfText(it.txt,bold), anc=A(a,"text-anchor")||"start";
+        const tw=t.w/1000*fs, x=N(a,"x")-(anc==="middle"?tw/2:anc==="end"?tw:0), col=rgb(A(a,"fill")||"#000",N(a,"opacity",1))||"0 0 0";
+        out.push(`BT ${col} rg /${bold?"F2":"F1"} 1 Tf ${f(fs)} 0 0 ${f(-fs)} ${f(x)} ${f(N(a,"y"))} Tm <${t.hex}> Tj ET`); } }
+    out.push("Q");
+    return {content:out.join("\n"),PW,PH,scale:sc};
+  }
+  /* assemble the PDF file; content stream Flate-compressed when the browser can, else stored plain */
+  async function svgToPdf(svg,title){
+    const {content,PW,PH,scale}=svgToPdfParts(svg);
+    let body=new TextEncoder().encode(content), filt="";
+    if(typeof CompressionStream==="function"){ try{ body=new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()); filt="/Filter /FlateDecode "; }catch(_){ body=new TextEncoder().encode(content); filt=""; } }
+    const te=new TextEncoder(), chunks=[], offs=[]; let len=0;
+    const push=x=>{ const u=typeof x==="string"?te.encode(x):x; chunks.push(u); len+=u.length; };
+    const ttl=pdfText(String(title||"AI fabric topology").slice(0,120),false).hex;
+    push("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".replace(/[\u0080-ÿ]/g,"#"));
+    const obj=(n,s)=>{ offs[n]=len; push(`${n} 0 obj\n${s}\nendobj\n`); };
+    obj(1,"<< /Type /Catalog /Pages 2 0 R >>");
+    obj(2,"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    obj(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW.toFixed(2)} ${PH.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`);
+    obj(4,"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+    obj(5,"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+    offs[6]=len; push(`6 0 obj\n<< ${filt}/Length ${body.length} >>\nstream\n`); push(body); push("\nendstream\nendobj\n");
+    obj(7,`<< /Title <${"feff"}${[...String(title||"").slice(0,120)].map(c=>c.codePointAt(0)<0x10000?c.codePointAt(0).toString(16).padStart(4,"0"):"003f").join("")}> /Producer (AI Fabric Designer) >>`);
+    const xref=len; let x=`xref\n0 8\n0000000000 65535 f \n`; for(let n=1;n<=7;n++) x+=`${String(offs[n]).padStart(10,"0")} 00000 n \n`;
+    push(x+`trailer\n<< /Size 8 /Root 1 0 R /Info 7 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+    const outU=new Uint8Array(len); let o=0; for(const c of chunks){ outU.set(c,o); o+=c.length; }
+    void ttl; return {bytes:outU,scale};
   }
   function completeDiagram(fab,b,opts={}){
     const c=!!opts.collapse;
@@ -5030,44 +5128,59 @@ const Exporter = {
         if(glines.some(sg=>onSeg(cx,cy,sg))) dot(r); }
     });
   }
-  /* ---------- COMPLETE DIAGRAM viewer: full-screen, vector zoom/pan (viewBox — crisp at any zoom), per-fabric tabs,
-     SVG download (full resolution), PNG of the current view, Lucidchart (folded when the full drawing is too large) ---------- */
+  /* ---------- EXPANDED TOPOLOGY viewer (one fabric) and UNIFIED VIEW (every generated fabric on one sheet):
+     full-screen, vector zoom/pan (viewBox — crisp at any zoom). Downloads cover exactly what the viewer shows:
+     PDF (vector) · SVG (vector, every device) · PNG (whole drawing) · Lucidchart (connector or editable .drawio).
+     Very large drawings fall back to the folded variant only where a format can't hold every device legibly. ---------- */
   const CD_LUCID_MAX={shapes:1500,w:24000};
-  function openComplete(bom,fab0){
+  const PDF_MIN_SCALE=0.1;
+  const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+  /* PNG raster scale for a w×h drawing: ≤2× (retina), within browser canvas limits (iOS Safari ≈16.7 MP) */
+  function pngScale(w,h){ const area=isIOS()?16.0e6:120e6, dim=16384; return Math.min(2,dim/w,dim/h,Math.sqrt(area/(w*h))); }
+  function openComplete(bom,fab0,unified){
     const old=document.querySelector(".cdv"); if(old) old.remove();
-    const fabs=["ew","ns","st","oob"].filter(f=>bom.inc[f]); let fab=fabs.includes(fab0)?fab0:fabs[0], cur=null;
-    const v=document.createElement("div"); v.className="cdv"; v.setAttribute("role","dialog"); v.setAttribute("aria-modal","true");
-    v.innerHTML=`<div class="cdv-head"><b class="cdv-t">Complete diagram</b>
-        <div class="seg cdv-tabs">${fabs.map(f=>`<button type="button" data-f="${f}" aria-pressed="${f===fab}">${({ew:"E-W",ns:"N-S",st:"Storage",oob:"OOB"})[f]}</button>`).join("")}</div>
+    const fabs=["ew","ns","st","oob"].filter(f=>bom.inc[f]); const fab=fabs.includes(fab0)?fab0:fabs[0];
+    const make=o=>unified?unifiedDiagram(bom,o):completeDiagram(fab,bom,o);
+    const base=unified?`${exName(bom.input,null)}-Unified Topology`:`${exName(bom.input,fab)}-Expanded Topology`;
+    const heading=unified?"Unified View — all generated topologies":`${TOPLBL[fab]} Topology — expanded`;
+    let cur=null, foldC=null; const folded=()=>foldC||(foldC=make({collapse:true}));
+    const v=document.createElement("div"); v.className="cdv"; v.setAttribute("role","dialog"); v.setAttribute("aria-modal","true"); v.dataset.mode=unified?"unified":fab;
+    v.innerHTML=`<div class="cdv-head"><b class="cdv-t">${esc(heading)}</b>
         <span class="spacer"></span>
-        <button class="btn neutral small" data-a="svg" type="button">SVG (full)</button>
-        <button class="btn neutral small" data-a="png" type="button">PNG (this view)</button>
-        <button class="btn neutral small" data-a="lucid" type="button">Lucidchart</button>
+        <span class="cdv-dl" role="group" aria-label="Download">
+        <button class="btn neutral small" data-a="pdf" type="button">PDF</button>
+        <button class="btn neutral small" data-a="svg" type="button">SVG</button>
+        <button class="btn neutral small" data-a="png" type="button">PNG</button>
+        <button class="btn neutral small" data-a="lucid" type="button">Lucidchart</button></span>
         <button class="btn primary small" data-a="close" type="button">Close</button></div>
       <div class="cdv-stage" id="cdv-stage"></div>
       <div class="cdv-foot"><span id="cdv-info"></span><span class="spacer"></span>
         <button type="button" data-a="out" aria-label="Zoom out">−</button><button type="button" data-a="fit">Fit</button><button type="button" data-a="in" aria-label="Zoom in">+</button></div>`;
     document.body.appendChild(v); document.body.classList.add("zv-open");
     const stage=v.querySelector("#cdv-stage"), info=v.querySelector("#cdv-info");
-    let vb=null, full=null, svg=null;
+    let vb=null, full=null, svg=null, baseInfo="";
     const setVB=()=>{ svg.setAttribute("viewBox",`${vb.x} ${vb.y} ${vb.w} ${vb.h}`); };
     const fit=()=>{ const W=stage.clientWidth, H=stage.clientHeight, a=W/H; let w=full.w, h=full.h;
       if(w/h>a) h=w/a; else w=h*a; vb={x:full.x-(w-full.w)/2,y:full.y-(h-full.h)/2,w,h}; setVB(); };
     const zoom=(f,px,py)=>{ const W=stage.clientWidth, H=stage.clientHeight; px=px??W/2; py=py??H/2;
-      const nw=Math.max(60,Math.min(full.w*4,vb.w/f)), r=nw/vb.w, ax=vb.x+vb.w*px/W, ay=vb.y+vb.h*py/H;
+      const nw=Math.max(60,Math.min(Math.max(full.w,full.h)*4,vb.w/f)), r=nw/vb.w, ax=vb.x+vb.w*px/W, ay=vb.y+vb.h*py/H;
       vb={x:ax-(ax-vb.x)*r,y:ay-(ay-vb.y)*r,w:nw,h:vb.h*r}; setVB(); };
+    const note=(html)=>{ info.innerHTML=html?`${esc(baseInfo)} · ${html}`:esc(baseInfo); };
     const draw=()=>{
-      stage.innerHTML='<div class="note" style="padding:20px">Drawing every device…</div>';
+      stage.innerHTML=`<div class="note" style="padding:20px">Drawing every device${unified?" in every fabric":""}…</div>`;
       setTimeout(()=>{ try{
-        cur=completeDiagram(fab,bom);
+        cur=make({});
         stage.innerHTML=cur.svg; svg=stage.querySelector("svg"); svg.removeAttribute("width"); svg.removeAttribute("height");
         svg.setAttribute("width","100%"); svg.setAttribute("height","100%"); svg.setAttribute("preserveAspectRatio","xMidYMid meet");
         const m=svg.getAttribute("viewBox").split(/\s+/).map(Number); full={x:m[0],y:m[1],w:m[2],h:m[3]}; fit();
-        /* a very wide fabric opens at its left end at full height (readable); Fit shows the whole fabric */
-        { const W=stage.clientWidth, H=stage.clientHeight; if(full.w/full.h>3*(W/H)){ const h=full.h, w=h*W/H; vb={x:full.x,y:full.y,w,h}; setVB(); } }
-        info.textContent=`${cur.shapes.toLocaleString()} boxes · ${cur.lines.toLocaleString()} links · ${Math.round(cur.w).toLocaleString()} × ${Math.round(cur.h).toLocaleString()} px · scroll / pinch to zoom, drag to pan`;
-        v.querySelector(".cdv-t").textContent=`Complete diagram — ${FABNAME[fab]}`;
-      }catch(e){ stage.innerHTML=`<div class="note" style="padding:20px">Couldn't draw this fabric: ${esc(e.message)}</div>`; console.error(e); } },20); };
+        /* a very wide drawing opens at its left end at full height (readable); a unified sheet opens on its first fabric */
+        { const W=stage.clientWidth, H=stage.clientHeight;
+          /* too small to read when fitted → open at the top-left (unified: the first fabric's full height), readable; Fit shows everything */
+          if(unified&&cur.secs&&cur.secs.length>1){ if(W/full.w<0.35){ const h=Math.min(full.h,cur.secs[0].y+cur.secs[0].h+30), w=h*W/H; vb={x:full.x,y:full.y,w,h}; setVB(); } }
+          else if(full.w/full.h>3*(W/H)){ const h=full.h, w=h*W/H; vb={x:full.x,y:full.y,w,h}; setVB(); } }
+        baseInfo=`${unified?`${cur.secs.length} topologies · `:""}${cur.shapes.toLocaleString()} boxes · ${cur.lines.toLocaleString()} links · ${Math.round(cur.w).toLocaleString()} × ${Math.round(cur.h).toLocaleString()} px · scroll / pinch to zoom, drag to pan`;
+        note("");
+      }catch(e){ stage.innerHTML=`<div class="note" style="padding:20px">Couldn't draw this topology: ${esc(e.message)}</div>`; console.error(e); } },20); };
     /* pan / zoom: mouse wheel, drag, two-finger pinch */
     const P=new Map(); let last=null;
     const rel=e=>{ const r=stage.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
@@ -5079,32 +5192,36 @@ const Exporter = {
       else if(P.size===1){ const k=vb.w/stage.clientWidth; vb.x-=(c.x-prev.x)*k; vb.y-=(c.y-prev.y)*k; setVB(); } });
     const up=e=>{ P.delete(e.pointerId); if(P.size<2) last=null; };
     stage.addEventListener("pointerup",up); stage.addEventListener("pointercancel",up);
-    v.querySelectorAll(".cdv-tabs button").forEach(bn=>bn.onclick=()=>{ fab=bn.dataset.f; v.querySelectorAll(".cdv-tabs button").forEach(x=>x.setAttribute("aria-pressed",x===bn?"true":"false")); draw(); });
     const close=()=>{ v.remove(); document.body.classList.remove("zv-open"); document.removeEventListener("keydown",kd); };
     const kd=e=>{ if(e.key==="Escape") close(); }; document.addEventListener("keydown",kd);
     v.querySelector('[data-a="close"]').onclick=close;
     v.querySelector('[data-a="in"]').onclick=()=>zoom(1.5); v.querySelector('[data-a="out"]').onclick=()=>zoom(1/1.5); v.querySelector('[data-a="fit"]').onclick=fit;
-    v.querySelector('[data-a="svg"]').onclick=async()=>{ if(!cur) return;
-      const r=await Exporter.save(`${exName(bom.input,fab)} - complete.svg`,new Blob([svgLiteral(cur.svg)],{type:"image/svg+xml"})); if(r!=="saved"&&r!=="shared") toast(r==="declined"?"Save declined":"Download unavailable here"); };
-    v.querySelector('[data-a="png"]').onclick=async()=>{ if(!cur||!vb) return;
-      /* the CURRENT view at up to 4,000 px wide — zoom in first for a readable close-up of a large fabric */
-      const outW=Math.min(4000,Math.max(1600,Math.round(stage.clientWidth*2))), outH=Math.round(outW*vb.h/vb.w);
-      const src=svgLiteral(cur.svg).replace(/viewBox="[^"]+"/,`viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}"`).replace(/ width="\d+" height="\d+"/,` width="${outW}" height="${outH}"`);
-      const img=new Image(); const url=URL.createObjectURL(new Blob([src],{type:"image/svg+xml"}));
-      img.onload=async()=>{ const c=document.createElement("canvas"); c.width=outW; c.height=outH; const g=c.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,outW,outH); g.drawImage(img,0,0,outW,outH); URL.revokeObjectURL(url);
-        c.toBlob(async bl=>{ const r=await Exporter.save(`${exName(bom.input,fab)} - complete view.png`,bl); if(r!=="saved"&&r!=="shared") toast(r==="declined"?"Save declined":"Download unavailable here"); },"image/png"); };
-      img.onerror=()=>{ URL.revokeObjectURL(url); toast("PNG render failed — use SVG"); }; img.src=url; };
-    v.querySelector('[data-a="lucid"]').onclick=async()=>{ if(!cur) return;
-      const lb=v.querySelector('[data-a="lucid"]'); lb.disabled=true;
-      try{
-        const big=cur.shapes>CD_LUCID_MAX.shapes||cur.w>CD_LUCID_MAX.w, title=`${exName(bom.input,fab)} - complete`;
-        const fullS=big?null:svgLiteral(cur.svg), foldS=svgLiteral(completeDiagram(fab,bom,{collapse:true}).svg);
-        const o=await lucidOpen(fullS?[fullS,foldS]:[foldS],title,toast,!fullS);
-        info.innerHTML=lucidMsg(o,title)+(o.folded&&o.mode==="drawio"?" · repeated blocks/pods folded to stay within import limits; SVG (full) has every device":"");
-        if(o.mode==="drawio"&&(o.res==="saved"||o.res==="shared")) toast("Saved .drawio for Lucidchart — use the “open Lucidchart” link below the diagram, then "+LUCID_STEPS,true);
-      }catch(e3){ toast("Lucid export failed: "+e3.message); }
-      lb.disabled=false;
-    };
+    const saved=r=>{ if(r!=="saved"&&r!=="shared") toast(r==="declined"?"Save declined":"Download unavailable here"); return r==="saved"||r==="shared"; };
+    const busy=async(a,fn)=>{ const bn=v.querySelector(`[data-a="${a}"]`); if(!cur||bn.disabled) return; bn.disabled=true; const t=bn.textContent; bn.textContent="…";
+      try{ await fn(); }catch(e){ toast(`${t} export failed: ${e.message}`); console.error(e); } bn.disabled=false; bn.textContent=t; };
+    v.querySelector('[data-a="svg"]').onclick=()=>busy("svg",async()=>{
+      if(saved(await Exporter.save(`${base}.svg`,new Blob([svgLiteral(cur.svg)],{type:"image/svg+xml"})))) note(`saved ${esc(base)}.svg — every device, vector`); });
+    v.querySelector('[data-a="pdf"]').onclick=()=>busy("pdf",async()=>{
+      let d=cur, fo=false; if(Math.min(1,14400/d.w,14400/d.h)<PDF_MIN_SCALE){ d=folded(); fo=true; }
+      const {bytes}=await svgToPdf(svgLiteral(d.svg),heading);
+      if(saved(await Exporter.save(`${base}${fo?" (folded)":""}.pdf`,new Blob([bytes],{type:"application/pdf"}))))
+        note(`saved ${esc(base)}${fo?" (folded)":""}.pdf — vector, zoom in for detail${fo?" · too large for one PDF page, repeated units folded; SVG has every device":""}`); });
+    v.querySelector('[data-a="png"]').onclick=()=>busy("png",async()=>{
+      let d=cur, fo=false, k=pngScale(d.w,d.h); if(k<0.5){ const f2=folded(), k2=pngScale(f2.w,f2.h); if(k2>k){ d=f2; k=k2; fo=true; } }
+      const outW=Math.max(1,Math.round(d.w*k)), outH=Math.max(1,Math.round(d.h*k));
+      const src=svgLiteral(d.svg).replace(/ width="\d+" height="\d+"/,` width="${outW}" height="${outH}"`);
+      const bl=await new Promise((res,rej)=>{ const img=new Image(), url=URL.createObjectURL(new Blob([src],{type:"image/svg+xml"}));
+        img.onload=()=>{ try{ const c=document.createElement("canvas"); c.width=outW; c.height=outH; const g=c.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,outW,outH); g.drawImage(img,0,0,outW,outH); URL.revokeObjectURL(url);
+          c.toBlob(x=>x?res(x):rej(new Error("image too large for this browser — use PDF or SVG")),"image/png"); }catch(e){ URL.revokeObjectURL(url); rej(e); } };
+        img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error("render failed — use PDF or SVG")); }; img.src=url; });
+      if(saved(await Exporter.save(`${base}${fo?" (folded)":""}.png`,bl)))
+        note(`saved ${esc(base)}${fo?" (folded)":""}.png — ${outW.toLocaleString()} × ${outH.toLocaleString()} px${fo?" · repeated units folded to stay legible; PDF / SVG have every device":k<1?" · PDF / SVG zoom further":""}`); });
+    v.querySelector('[data-a="lucid"]').onclick=()=>busy("lucid",async()=>{
+      const big=cur.shapes>CD_LUCID_MAX.shapes||cur.w>CD_LUCID_MAX.w;
+      const fullS=big?null:svgLiteral(cur.svg), foldS=svgLiteral(folded().svg);
+      const o=await lucidOpen(fullS?[fullS,foldS]:[foldS],base,toast,!fullS);
+      note(lucidMsg(o,base)+(o.folded&&o.mode==="drawio"?" · repeated units folded to stay within import limits; SVG has every device":""));
+      if(o.mode==="drawio"&&(o.res==="saved"||o.res==="shared")) toast("Saved .drawio for Lucidchart — use the “open Lucidchart” link below the diagram, then "+LUCID_STEPS,true); });
     window.addEventListener("resize",()=>{ if(full&&document.body.contains(v)) fit(); });
     draw();
   }
@@ -5347,15 +5464,13 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         </div>
       </div></div>
 
-      <div class="card"><header><h2>Topology</h2></header><div class="body">
+      <div class="card"><header><h2>Topology</h2><button class="btn primary small" id="uv-btn" type="button" style="margin-left:auto" title="Every generated network topology, expanded, on one sheet">Unified View</button></header><div class="body">
         <div class="seg" id="fabtabs" role="tablist" aria-label="Fabric">
           ${["ew","ns","st","oob"].filter(f=>bom.inc[f]).map((f,ix)=>`<button type="button" data-f="${f}" aria-pressed="${ix===0?"true":"false"}">${({ew:"Compute E-W",ns:"North-South",st:"Storage",oob:"OOB Mgmt"})[f]}</button>`).join("")}
         </div>
         <div class="note"><b>Click any outlined block</b> to expand its internal connectivity below.</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0 2px">
-          <button class="btn primary small" id="cd-btn" type="button">Complete diagram</button>
-          <button class="btn neutral small" id="lucid-btn" type="button">Generate “East-West” in Lucidchart</button>
-          <span class="note" id="lucid-out" style="margin:0"></span>
+          <button class="btn primary small" id="cd-btn" type="button">Expand ${TOPLBL[["ew","ns","st","oob"].find(f=>bom.inc[f])||"ew"]} Topology</button>
         </div>
         <div class="diag" id="topo-ov"></div>
         <div id="topo-detail"></div>
@@ -5498,28 +5613,17 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     });
     /* topology tabs + overview */
     TOPO.bom=bom; TOPO.fab=["ew","ns","st","oob"].find(f=>bom.inc[f])||"ew"; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null; TOPO.growth=false;
-    { const lb1=$("lucid-btn"); if(lb1) lb1.textContent=`Generate “${FABNAME[TOPO.fab]}” in Lucidchart`; }
+    { const cb1=$("cd-btn"); if(cb1) cb1.textContent=`Expand ${TOPLBL[TOPO.fab]} Topology`; }
     const tabs=$("fabtabs");
     tabs.addEventListener("click",e=>{
       const b2=e.target.closest("button"); if(!b2)return;
       [...tabs.children].forEach(x=>x.setAttribute("aria-pressed",x===b2?"true":"false"));
       TOPO.fab=b2.dataset.f; TOPO.detail=null; TOPO.idx=null; TOPO.plane=null; TOPO.growth=false; renderTopo();
-      const lb0=$("lucid-btn"); if(lb0) lb0.textContent=`Generate “${FABNAME[TOPO.fab]}” in Lucidchart`;
+      const cb0=$("cd-btn"); if(cb0) cb0.textContent=`Expand ${TOPLBL[TOPO.fab]} Topology`;
     });
     renderTopo();
-    const cdb=$("cd-btn"); if(cdb) cdb.onclick=()=>openComplete(bom,TOPO.fab);
-    const lb=$("lucid-btn"), lout=$("lucid-out");
-    if(lb) lb.addEventListener("click",async()=>{
-      lb.disabled=true; const old=lb.textContent; lb.textContent="Generating…"; lout.textContent="";
-      try{
-        const title=exName(i,TOPO.fab);
-        const o=await lucidOpen([fullSVG(TOPO.fab,bom)],title,toast);
-        lout.innerHTML=lucidMsg(o,title);
-        if(o.mode==="connector") toast("Lucidchart document created",true);
-        else if(o.res==="saved"||o.res==="shared") toast("Saved .drawio for Lucidchart — open Lucidchart, then "+LUCID_STEPS,true);
-      }catch(e3){ toast("Lucid export failed: "+e3.message); }
-      lb.disabled=false; lb.textContent=old;
-    });
+    const cdb=$("cd-btn"); if(cdb) cdb.onclick=()=>openComplete(bom,TOPO.fab,false);
+    const uvb=$("uv-btn"); if(uvb) uvb.onclick=()=>openComplete(bom,null,true);
     $("results").scrollIntoView({behavior:"smooth",block:"start"});
   }
 
@@ -5599,7 +5703,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="95";
+  const APP_BUILD="96";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
