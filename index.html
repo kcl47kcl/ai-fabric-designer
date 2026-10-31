@@ -4456,23 +4456,26 @@ const Exporter = {
     const rects=[], out=[]; let id=2;
     for(const it of items){ if(it.k!=="rect") continue;
       const r={id:"r"+(id++),x:N(it.a,"x")-ox,y:N(it.a,"y")-oy,w:N(it.a,"width"),h:N(it.a,"height"),rx:N(it.a,"rx"),fill:col(A(it.a,"fill")),stroke:col(A(it.a,"stroke")),sw:N(it.a,"stroke-width",1),dash:A(it.a,"stroke-dasharray"),op:N(it.a,"opacity",1),lines:[],font:null};
-      r.frame=!!r.dash||r.fill==="none"; r.bg=r.x<=1&&r.y<=1&&r.w>=vb[2]-2&&r.h>=vb[3]-2&&r.stroke==="none"; it.r=r; if(!r.bg) rects.push(r); }
+      r.frame=!!r.dash||r.fill==="none";
+      /* page / section backgrounds (unstroked white sheets — one per fabric on the unified sheet) are not shapes:
+         left in, they would swallow every free label of their section as one centred box label */
+      r.bg=r.stroke==="none"&&(/^(#fff|#ffffff|white)$/i.test(r.fill)||(r.x<=1&&r.y<=1))&&r.w>=1000&&r.h>=40; it.r=r; if(!r.bg) rects.push(r); }
     const inside=(r,x,y,t=0)=>x>=r.x-t&&x<=r.x+r.w+t&&y>=r.y-t&&y<=r.y+r.h+t;
     const host=(x,y)=>{ let best=null; for(const r of rects){ if(r.frame||!inside(r,x,y)) continue; if(!best||r.w*r.h<best.w*best.h) best=r; } return best; };
     /* texts inside a solid box become that box's label (keeps box + text together when edited in Lucid) */
     for(const it of items){ if(it.k!=="text"||!it.txt) continue;
       const x=N(it.a,"x")-ox, y=N(it.a,"y")-oy, r=host(x,y-N(it.a,"font-size",9)*0.35);
-      if(r){ r.lines.push(it.txt); if(!r.font) r.font={fs:N(it.a,"font-size",9),c:A(it.a,"fill")||"#1d2340",b:/700|bold/.test(A(it.a,"font-weight")||"")}; it.used=true; } }
+      if(r){ const ln={t:it.txt,fs:N(it.a,"font-size",9),c:A(it.a,"fill")||"#1d2340",b:/700|bold/.test(A(it.a,"font-weight")||"")}; r.lines.push(ln); if(!r.font) r.font=ln; it.used=true; } }
     const glue=(x,y)=>{ let best=null; for(const r of rects){ if(r.frame||!inside(r,x,y,1.6)) continue; if(!best||r.w*r.h<best.w*best.h) best=r; } return best; };
     const f=v=>Math.round(v*10)/10;
     for(const it of items){
       if(it.k==="rect"){ const r=it.r; if(r.bg) continue;
-        const st=[`rounded=${r.rx>0?1:0}`,"whiteSpace=wrap","html=0",`arcSize=${r.rx>0?Math.min(50,Math.round(r.rx*100/Math.max(1,Math.min(r.w,r.h)))):0}`,"absoluteArcSize=0",`fillColor=${r.fill}`,`strokeColor=${r.stroke}`,`strokeWidth=${r.sw}`];
+        const st=[`rounded=${r.rx>0?1:0}`,"whiteSpace=wrap",`html=${r.lines.length?1:0}`,`arcSize=${r.rx>0?Math.min(50,Math.round(r.rx*100/Math.max(1,Math.min(r.w,r.h)))):0}`,"absoluteArcSize=0",`fillColor=${r.fill}`,`strokeColor=${r.stroke}`,`strokeWidth=${r.sw}`];
         if(r.dash) st.push("dashed=1",`dashPattern=${r.dash.replace(/,/g," ")}`);
         if(r.op<1) st.push(`opacity=${Math.round(r.op*100)}`);
         if(r.frame) st.push("container=0","pointerEvents=0");
-        if(r.font) st.push(`fontSize=${r.font.fs}`,`fontColor=${r.font.c}`,`fontStyle=${r.font.b?1:0}`,"verticalAlign=middle","align=center","spacing=1");
-        out.push(`<mxCell id="${r.id}" value="${xe(r.lines.join("\n"))}" style="${st.join(";")};" vertex="1" parent="1"><mxGeometry x="${f(r.x)}" y="${f(r.y)}" width="${f(r.w)}" height="${f(r.h)}" as="geometry"/></mxCell>`);
+        if(r.font) st.push(`fontSize=${r.font.fs}`,`fontColor=${r.font.c}`,"fontStyle=0","verticalAlign=middle","align=center","spacing=0","fontFamily=Helvetica");
+        out.push(`<mxCell id="${r.id}" value="${xe(r.lines.map(l=>{ const he=String(l.t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<font style="font-size:${l.fs}px" color="${l.c}">${l.b?`<b>${he}</b>`:he}</font>`; }).join("<br>"))}" style="${st.join(";")};" vertex="1" parent="1"><mxGeometry x="${f(r.x)}" y="${f(r.y)}" width="${f(r.w)}" height="${f(r.h)}" as="geometry"/></mxCell>`);
       } else if(it.k==="line"){
         const x1=N(it.a,"x1")-ox,y1=N(it.a,"y1")-oy,x2=N(it.a,"x2")-ox,y2=N(it.a,"y2")-oy, s=glue(x1,y1), t=glue(x2,y2);
         const st=["endArrow=none","startArrow=none","edgeStyle=none","html=0","rounded=0",`strokeColor=${col(A(it.a,"stroke"))}`,`strokeWidth=${N(it.a,"stroke-width",1)}`];
@@ -4493,7 +4496,7 @@ const Exporter = {
         out.push(`<mxCell id="p${id++}" value="" style="triangle;direction=${dir};html=0;fillColor=${col(A(it.a,"fill"))};strokeColor=none;" vertex="1" parent="1"><mxGeometry x="${f(x0)}" y="${f(y0)}" width="${f(w)}" height="${f(h)}" as="geometry"/></mxCell>`);
       } else if(it.k==="text"&&it.txt&&!it.used){
         const fs=N(it.a,"font-size",9), anc=A(it.a,"text-anchor")||"start", x=N(it.a,"x")-ox, y=N(it.a,"y")-oy;
-        const w=Math.max(8,it.txt.length*fs*0.56+6), h=fs*1.4, x0=anc==="middle"?x-w/2:anc==="end"?x-w:x-2;
+        const w=Math.max(8,it.txt.length*fs*0.62+12), h=fs*1.4, x0=anc==="middle"?x-w/2:anc==="end"?x-w:x-2;
         const st=["text","html=0","whiteSpace=nowrap","strokeColor=none","fillColor=none",`align=${anc==="middle"?"center":anc==="end"?"right":"left"}`,"verticalAlign=middle","spacing=0",`fontSize=${fs}`,`fontColor=${A(it.a,"fill")||"#1d2340"}`,`fontStyle=${/700|bold/.test(A(it.a,"font-weight")||"")?1:0}`];
         out.push(`<mxCell id="t${id++}" value="${xe(it.txt)}" style="${st.join(";")};" vertex="1" parent="1"><mxGeometry x="${f(x0)}" y="${f(y-fs*1.05)}" width="${f(w)}" height="${f(h)}" as="geometry"/></mxCell>`);
       }
@@ -5703,7 +5706,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="96";
+  const APP_BUILD="97";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
