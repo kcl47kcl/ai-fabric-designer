@@ -4856,6 +4856,32 @@ const Exporter = {
     const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}" width="${W.toFixed(0)}" height="${H.toFixed(0)}" font-family="var(--font)" font-size="9"><rect x="0" y="0" width="${W.toFixed(1)}" height="${H.toFixed(1)}" fill="var(--card)"/>${head}${body}</svg>`;
     return {svg,w:W,h:H,shapes,lines,secs};
   }
+  /* ---------- UNIFIED VIEW - CONCENTRATED: every generated fabric's HIGH-LEVEL overview (the picture on its Topology tab,
+     before anything is expanded) stacked on one sheet — growth dotting, tier boxes and captions exactly as on screen. ---------- */
+  const OV_FN={ew:b=>ewOv(b),ns:b=>nsOv(b),st:b=>stOv(b),oob:b=>oobOv(b)};
+  const OV_NAME={ew:"Compute East-West",ns:"North-South",st:"Storage",oob:"OOB Management"};
+  function concentratedDiagram(b){
+    const fabs=["ew","ns","st","oob"].filter(f=>b.inc[f]);
+    const gap=60, top=150, head=58, W=1000, X=50; let y=top, body=""; const secs=[];
+    for(const f of fabs){
+      const sv=OV_FN[f](b), m=(sv.match(/^<svg[^>]*viewBox="0 0 ([\d.]+) ([\d.]+)"/)||[]); if(!m.length) continue;
+      const w=+m[1], h=+m[2], inner=sv.replace(/^<svg[^>]*>/,"").replace(/<\/svg>\s*$/,"").replace(/<title>[\s\S]*?<\/title>/g,"")
+        .replace(/<text\b[^>]*>\s*▸ expand\s*<\/text>/g,"");   /* on-screen click hint — meaningless on a static sheet */
+      if(secs.length) body+=`<line x1="20" y1="${(y-gap/2).toFixed(1)}" x2="${W-20}" y2="${(y-gap/2).toFixed(1)}" stroke="var(--border)" stroke-width="2"/>`;
+      body+=`<text x="${X}" y="${(y+24).toFixed(1)}" font-size="20" font-weight="700" fill="var(--fg)">${cdEsc(exName(b.input,f))}</text>`
+        +`<text x="${X}" y="${(y+44).toFixed(1)}" font-size="11.5" fill="var(--muted)">${cdEsc(OV_NAME[f])} — high-level view · Expand ${cdEsc(TOPLBL[f])} Topology for every device</text>`;
+      /* overview drawn at its own 900-wide coordinates, shifted right/down into place (offsets baked, no transforms) */
+      const dx=X;
+      body+=shiftY(inner,y+head).replace(/(\s)(x|x1|x2|cx)="(-?[\d.]+)"/g,(q,sp,k,v)=>`${sp}${k}="${(+v+dx).toFixed(1)}"`).replace(/(\s)points="([^"]+)"/g,(q,sp,pts)=>`${sp}points="${pts.trim().split(/\s+/).map(pp=>{ const [a,c]=pp.split(","); return `${(+a+dx).toFixed(1)},${c}`; }).join(" ")}"`);
+      secs.push({f,y,h:h+head,w:w+X}); y+=head+h+gap; }
+    const H=y-gap+70;
+    const legend=`<text x="${X}" y="${(H-30).toFixed(1)}" font-size="11" fill="var(--muted)">Legend: E-W rails · N-S (green) · storage (amber) · OOB (dotted) · dotted boxes / links = added at the growth target · ×n = physical links</text>`;
+    const hd=`<text x="${X}" y="58" font-size="30" font-weight="700" fill="var(--fg)">${cdEsc(exName(b.input,null))} — Unified network topology</text>`
+      +`<text x="${X}" y="90" font-size="15" fill="var(--muted)">${cdEsc(fabs.map(f=>TOPLBL[f]).join(" · "))} — every generated fabric on one sheet, concentrated (high-level views)</text>`
+      +`<text x="${X}" y="112" font-size="11" fill="var(--muted)">${b.input.nodes.toLocaleString()} GPU hosts${b.totalNodes&&b.totalNodes!==b.input.nodes?` (${b.totalNodes.toLocaleString()} incl. group 2)`:""} · app build ${typeof APP_BUILD!=="undefined"?APP_BUILD:""} · catalog v${CATALOG.catalogVersion}</text>`;
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H.toFixed(1)}" width="${W}" height="${H.toFixed(0)}" font-family="var(--font)" font-size="11"><rect x="0" y="0" width="${W}" height="${H.toFixed(1)}" fill="var(--card)"/>${hd}${body}${legend}</svg>`;
+    return {svg,w:W,h:H,shapes:(body.match(/<rect\b/g)||[]).length,lines:(body.match(/<line\b/g)||[]).length,secs};
+  }
   /* ---------- Vector PDF from a literal SVG drawing (rect / line / circle / polygon / text), no libraries.
      One page sized to the drawing (scaled to ≤ 14,400 pt per side, the PDF page limit); Helvetica / Helvetica-Bold
      (WinAnsi) with real glyph widths so centred and right-aligned labels land where the SVG puts them. ---------- */
@@ -5140,14 +5166,16 @@ const Exporter = {
   const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
   /* PNG raster scale for a w×h drawing: ≤2× (retina), within browser canvas limits (iOS Safari ≈16.7 MP) */
   function pngScale(w,h){ const area=isIOS()?16.0e6:120e6, dim=16384; return Math.min(2,dim/w,dim/h,Math.sqrt(area/(w*h))); }
-  function openComplete(bom,fab0,unified){
+  /* mode: false = one fabric expanded · "expanded" = Unified View - Expanded · "concentrated" = Unified View - Concentrated */
+  function openComplete(bom,fab0,mode){
     const old=document.querySelector(".cdv"); if(old) old.remove();
     const fabs=["ew","ns","st","oob"].filter(f=>bom.inc[f]); const fab=fabs.includes(fab0)?fab0:fabs[0];
-    const make=o=>unified?unifiedDiagram(bom,o):completeDiagram(fab,bom,o);
-    const base=unified?`${exName(bom.input,null)}-Unified Topology`:`${exName(bom.input,fab)}-Expanded Topology`;
-    const heading=unified?"Unified View — all generated topologies":`${TOPLBL[fab]} Topology — expanded`;
+    const con=mode==="concentrated", unified=con||mode==="expanded"||mode===true;
+    const make=o=>con?concentratedDiagram(bom):unified?unifiedDiagram(bom,o):completeDiagram(fab,bom,o);
+    const base=con?`${exName(bom.input,null)}-Unified Topology - Concentrated`:unified?`${exName(bom.input,null)}-Unified Topology - Expanded`:`${exName(bom.input,fab)}-Expanded Topology`;
+    const heading=con?"Unified View - Concentrated — high-level views of all generated topologies":unified?"Unified View - Expanded — all generated topologies":`${TOPLBL[fab]} Topology — expanded`;
     let cur=null, foldC=null; const folded=()=>foldC||(foldC=make({collapse:true}));
-    const v=document.createElement("div"); v.className="cdv"; v.setAttribute("role","dialog"); v.setAttribute("aria-modal","true"); v.dataset.mode=unified?"unified":fab;
+    const v=document.createElement("div"); v.className="cdv"; v.setAttribute("role","dialog"); v.setAttribute("aria-modal","true"); v.dataset.mode=con?"concentrated":unified?"expanded":fab;
     v.innerHTML=`<div class="cdv-head"><b class="cdv-t">${esc(heading)}</b>
         <span class="spacer"></span>
         <span class="cdv-dl" role="group" aria-label="Download">
@@ -5170,7 +5198,7 @@ const Exporter = {
       vb={x:ax-(ax-vb.x)*r,y:ay-(ay-vb.y)*r,w:nw,h:vb.h*r}; setVB(); };
     const note=(html)=>{ info.innerHTML=html?`${esc(baseInfo)} · ${html}`:esc(baseInfo); };
     const draw=()=>{
-      stage.innerHTML=`<div class="note" style="padding:20px">Drawing every device${unified?" in every fabric":""}…</div>`;
+      stage.innerHTML=`<div class="note" style="padding:20px">${con?"Drawing every topology's high-level view":`Drawing every device${unified?" in every fabric":""}`}…</div>`;
       setTimeout(()=>{ try{
         cur=make({});
         stage.innerHTML=cur.svg; svg=stage.querySelector("svg"); svg.removeAttribute("width"); svg.removeAttribute("height");
@@ -5467,7 +5495,7 @@ OUTPUT (concise, markdown): 1) a per-link verdict list — "✅ OK", "⚠ ISSUE"
         </div>
       </div></div>
 
-      <div class="card"><header><h2>Topology</h2><button class="btn primary small" id="uv-btn" type="button" style="margin-left:auto" title="Every generated network topology, expanded, on one sheet">Unified View</button></header><div class="body">
+      <div class="card"><header><h2>Topology</h2><span class="uv-btns" style="margin-left:auto;display:inline-flex;gap:8px;flex-wrap:wrap;justify-content:flex-end"><button class="btn neutral small" id="uvc-btn" type="button" title="Every generated network topology's high-level view on one sheet">Unified View - Concentrated</button><button class="btn primary small" id="uv-btn" type="button" title="Every generated network topology, expanded to every device, on one sheet">Unified View - Expanded</button></span></header><div class="body">
         <div class="seg" id="fabtabs" role="tablist" aria-label="Fabric">
           ${["ew","ns","st","oob"].filter(f=>bom.inc[f]).map((f,ix)=>`<button type="button" data-f="${f}" aria-pressed="${ix===0?"true":"false"}">${({ew:"Compute E-W",ns:"North-South",st:"Storage",oob:"OOB Mgmt"})[f]}</button>`).join("")}
         </div>
@@ -5626,7 +5654,8 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
     });
     renderTopo();
     const cdb=$("cd-btn"); if(cdb) cdb.onclick=()=>openComplete(bom,TOPO.fab,false);
-    const uvb=$("uv-btn"); if(uvb) uvb.onclick=()=>openComplete(bom,null,true);
+    const uvb=$("uv-btn"); if(uvb) uvb.onclick=()=>openComplete(bom,null,"expanded");
+    const uvc=$("uvc-btn"); if(uvc) uvc.onclick=()=>openComplete(bom,null,"concentrated");
     $("results").scrollIntoView({behavior:"smooth",block:"start"});
   }
 
@@ -5706,7 +5735,7 @@ At growth → ${bom.future.nodes.toLocaleString()} hosts: E-W ${bom.future.ew.le
   });
 
   document.title="AI Fabric Designer";
-  const APP_BUILD="97";
+  const APP_BUILD="98";
   if($("appbuild")) $("appbuild").textContent=`App build ${APP_BUILD} · catalog v${CATALOG.catalogVersion}`;
   $("catver").textContent=CATALOG.catalogVersion; $("catasof").textContent=CATALOG.asOf;
   refreshOptions();
